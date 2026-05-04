@@ -1,0 +1,57 @@
+[project]
+name = "auto-atlas"
+version = "0.0.1"
+description = "Automatic atlas design and curation utilities"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "lancedb",
+    "numpy",
+    "polars",
+    "pydantic",
+    "pyarrow",
+    "requests",
+    "pylance>=2.0.0",
+    "boto3",
+    "gcsfs",
+    "s3fs",
+    "gget",
+    "mygene",
+    "anthropic",
+    "pydantic-ai-slim",
+]
+
+[project.optional-dependencies]
+all = [
+    "auto-atlas",
+    "duckdb",
+]
+dev = [
+    "pytest",
+    "ruff",
+    "pre-commit",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["notebooks/"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
