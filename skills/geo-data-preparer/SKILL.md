@@ -1,6 +1,6 @@
 ---
 name: geo-data-preparer
-description: Use when a user provides a GEO accession and a target schema file and whats to prepare a dataset for ingestion. Covers listing and downloading GEO files as well a file classification, metadata creation, and delegation to resolver sub-agents for metadata resolution to ontologies and databases.
+description: Use when a user provides a GEO accession and a target homeobox schema file and wants to align and prepare the dataset for ingestion against that schema. Covers listing and downloading GEO files as well as file classification, metadata creation, and delegation to resolver sub-agents for metadata resolution to ontologies and databases.
 ---
 
 # GEO Data Preparer
@@ -14,36 +14,34 @@ This skill handles the full pre-ingestion pipeline:
 3. **Classifying** files (e.g., h5ad vs matrix + companion files)
 4. **Writing metadata.json** that stores GEO series or sample metadata
 5. **Creating global tables** for feature registries and foreign keys
-6. **Delegating** resolution to resolver sub-agents (accession-level global tables)
+6. **Delegating** metadata standardization to resolver sub-agents
 
-It does NOT handle assembling standardized CSVs, adding data to LanceDB, or writing Zarr arrays. Those responsibilities belong to the `geo-data-curator` skill. Mapping resolved perturbation UIDs back to per-experiment obs is handled by the perturbation resolver subagents (e.g., `genetic-perturbation-resolver` writes `{fs}_fragment_perturbation_obs.csv`).
+It does NOT handle assembling standardized CSVs, adding data to LanceDB, or writing Zarr arrays. Those responsibilities belong to the `geo-data-curator` skill. 
 
-> **HARD BOUNDARY: The preparer is a logistics role, not an interpretation role.** You download files, extract raw dataframes, and hand them to resolvers. You do NOT:
-> - Read, parse, or inspect supplementary library files (guide libraries, reagent libraries, compound libraries). Pass the file path to the resolver.
-> - Make design decisions about how resolvers should interpret data (e.g., how dual-guide pairs map to schema rows, how control labels are detected, how transcript IDs map to target context). The resolver skills already encode this logic.
-> - Ask the user questions that a resolver would answer (e.g., "should each guide be its own row?", "what does this column mean for the perturbation schema?"). If you don't know, the resolver does.
+> **HARD BOUNDARY: This is a preparation and orchestration skill only.** Other skills exist for:
+> - Reading, parsing, or inspecting supplementary files (e.g., guide libraries, reagent libraries, compound libraries). This skill does not provide the requisite detail to understand such files and you must choose an appropriate resolver and delegate to them instead.
+> - Making decisions about how resolvers should interpret data (e.g., how dual-guide pairs map to schema rows, how control labels are detected, how transcript IDs map to target context). The resolver skills describe how to do this properly, this skill does not. You shouldn't make any assumptions or decisions on these points.
 >
-> Your job is to relay column names, file paths, and delimiters to resolvers — not to understand what's inside them. When in doubt, pass more context to the resolver rather than trying to interpret it yourself.
+> Your job when executing this skill is to relay column names, file paths, and delimiters, etc. When in doubt, pass more context to resolvers rather than trying to interpret anything yourself.
 
 ## Scripts
 
-You have access to scripts that can be used for common tasks. Run these via Bash. All paths are relative to this skill directory.
+You have access to scripts that can be used for common tasks. All paths are relative to this skill directory.
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
 | `scripts/list_geo_files.py` | `python scripts/list_geo_files.py GSE123456` | List supplementary files for any GEO accession (GSE or GSM) |
 | `scripts/download_geo_file.py` | `python scripts/download_geo_file.py GSE123456 file.h5ad [dest_dir]` | Download a supplementary file via FTP (default dest: `/tmp/geo_agent/<accession>/`) |
 | `scripts/write_metadata_json.py` | `python scripts/write_metadata_json.py <experiment_dir> <accession>` | Fetch GEO metadata and write metadata.json in the experiment directory |
-| (see **publication-resolver** skill) | `python scripts/write_publication_parquet.py <data_dir> <schema_module> <pub_schema_class> [--section-schema <section_class>] [--pmid PMID] [--title TITLE]` | Fetch publication metadata from PubMed/PMC and write validated parquet files + publication.json (delegated to publication-resolver skill) |
 | `scripts/reconcile_barcodes.py` | `python scripts/reconcile_barcodes.py <experiment_dir>` | Reconcile barcodes across modalities; writes `multimodal_barcode` to each feature space's preparer fragment |
 
 ## Workflow
 
 ### 1. List and identify data files for the provided GEO accession
 
-Check the available files. If the user provides a series or super-series record from GEO, you may need to look for files at the sample-level. If the series record has aggregated and preprocessed files or a large tar file, those are generally preferable. However, if the series level has no files or only summary statistics, then check the sample-level for real data. If there are many sample records for a series its best to process them one at a time to avoid confusion. When this is the case, ask the user how they want to proceed.
+If the accession code is for a series or superseries (GSE prefix) series record, look for preprocessed and filtered files or a single large tar file, these are generally preferable. However, if the series level has no files or only summary statistics, then you should check the sample-level for the real data. If there are many sample records its best to process them one at a time to avoid confusion. If very many, you should ask the user how they would like to proceed.
 
-Currently, we support the following file formats:
+Currently, we support the following file formats (which may be in `.tar` files):
 
 | Format | Action |
 |--------|--------|
@@ -64,7 +62,7 @@ If the file formats present on the GEO record fall outside of this list, raise i
 
 ### 2. Read the schema file
 
-This skill's validation workflow is driven by a **user-provided Python schema file**, which is of type lancedb.pydantic.LanceModel, a subclass of a pydantic BaseModel. The schema defines the tables and fields to populate with GEO data.
+This skill's validation workflow is driven by a **user-provided Python schema file**. The schema defines the tables and fields to populate with data.
 
 The user must provide the schema file path as part of their task prompt. Example:
 
@@ -72,7 +70,7 @@ The user must provide the schema file path as part of their task prompt. Example
 
 If no schema was provided, ask the user for the path before going any further. Read the Python file and identify:
 
-1. **The obs schema class** — This inherits from `HoxBaseSchema`, verify that there is only one table in the schema file matching this.
+1. **The obs schema classes** — These inherits from `HoxBaseSchema`. If there is more than one, you user will need to specify which to use, do not assume.
 2. **Feature registry classes** — These inherit from `FeatureBaseSchema` and correspond to var-level fields per feature space supported by an atlas.
 3. **Foreign key classes** — These inherit directly from `LanceModel`. These tables are referenced by either the obs table or a feature registry table through a foreign key.
 
@@ -90,13 +88,13 @@ You may need to run this multiple times. Sometimes when the data is stored at th
 
 Read the relevant json files. These often include helpful information about how to use the files and high-level metadata like organism or assay.
 
-### 4. Download and parse the publication
+### 4. (Optional) Download and parse the publication
 
-Launch a subagent with `publication-resolver` skill to create `PublicationSchema.parquet` (and optionally `PublicationSectionSchema.parquet`) plus the backward-compatible `publication.json`. Provide it with a publication title, PMID, DOI, or author names and search terms, the schema module path and publication schema class name, and optionally the section schema class name. Often the requisite identifier information will be found in the GEO metadata json files that you just downloaded in the previous step.
+If any of the schemas are storing publication-related data (like PubMed ids, publication text, or figures), then you may launch a subagent with the `publication-resolver` skill. Provide it with a publication title, PMID, DOI, or author names and search terms so that it can find the paper in PubMed. Also provide the schema module path and any publication-related schema class names for which the resolver should be responsible. Often the requisite identifier information is found in the GEO metadata json files that you downloaded in the previous step.
 
-The publication resolver produces validated parquet files with UIDs already assigned, following the same pattern as other resolvers. The `publication_uid` is included in `publication.json` for downstream reference.
+The publication resolver produces validated parquet files with UIDs already assigned, following the same pattern as other resolvers. The `uid` is included in `publication.json` for downstream reference.
 
-In some cases the GEO record does not have a clear publication reference. Do not guess at the publication, stop and ask the user to provide it directly.
+In some cases the GEO record does not have a clear publication reference. Do not guess at the publication, stop and ask the user to provide it directly. There is nothing worse than a hallucinated citation.
 
 If you have questions about the data in later steps, the publication is a good place to find answers before asking the user.
 
@@ -114,9 +112,9 @@ Next group the files into subdirectories by experiment. Simply use `mv` to move 
 
 ### 6. Create raw obs and var dataframes
 
-Each of the subdirectories should have dataframes that correspond to obs-level and typically var-level metadata as well. These dataframe might be csv or tsv or inside of an h5ad file. In either case, write new csv files with suffix `_raw_obs.csv` and `_raw_var.csv`, where the feature space might be "gene_expression", "chromatin_accessibility, "protein_abundance", etc. There shouldn't be more than 1 obs or var csv per modality.
+Each of the subdirectories should have dataframes that correspond to obs-level and, typically, var-level metadata as well. These dataframe might be csv or tsv or inside of an h5ad file. In either case, write new csv files with suffix `_{feature_space}_raw_obs.csv` and `_{feature_space}_raw_var.csv`, where the feature space might be "gene_expression", "chromatin_accessibility, "protein_abundance", etc. There shouldn't be more than 1 obs or var csv per modality.
 
-For the most part you should not remove any columns from the original dataframes, but you may add additional fields that were discovered from the GEO metadata or the downloaded publication text. For example, the raw dataframes associated might not include global metadata like organism, cell type, or donor information. If that information is in the metadata or publication, create new columns relevant to the schema. Do not worry about standardizing the terms that you find because that is delegated to the resolver subagents.
+You should not remove any columns from the original dataframes, but you may add additional fields that were discovered from the GEO metadata or the downloaded publication text. For example, the raw dataframes might not include global metadata like organism, cell type, or donor information. If that information is in the metadata or publication, create new columns relevant to the schema. Do not worry about standardizing the terms that you find because that is delegated to the resolver subagents.
 
 For any obs fields that need only pass-through or type coercion (e.g., batch_id, replicate, well_position, days_in_vitro), write them to `{fs}_fragment_preparer_obs.csv` using the schema field names directly. For multimodal experiments, also run barcode reconciliation:
 
@@ -146,9 +144,7 @@ Column misalignment across datasets is OK — union of columns with NaN fills.
 
 **Enrich `_raw.csv` with supplementary data.** Before handing off to resolvers, add supplementary info (e.g., publication metadata, global experimental variables, etc.) into `_raw.csv`. **`_raw.csv` contains all available information in unstandardized form.** The preparer never calls resolution functions; the resolver never hunts for supplementary files.
 
-> **STOP: Do not read, parse, inspect, or make decisions about supplementary library files (guide libraries, reagent libraries, compound libraries, etc.).** Do not ask the user questions about their contents or format. Do not try to understand the data format or make schema-mapping decisions based on them. Pass the file path directly to the appropriate resolver subagent in its prompt. The resolver skills already know how to handle these files. Your only job is to relay the path. This applies equally to perturbation columns in obs — extract them into `_raw.csv` but do not interpret their structure (e.g., delimiters, ID formats, control labels). Tell the resolver what the column is called and let it do the rest.
-
-**Naming convention:** Use the full schema class name: `GenomicFeatureSchema`, `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `BiologicPerturbationSchema`, `ProteinSchema`.
+**Naming convention:** Use the full schema class name, examples might be: `GenomicFeatureSchema`, `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `BiologicPerturbationSchema`, or `ProteinSchema`.
 
 ### 8. Delegate resolution to resolver subagents
 
@@ -162,7 +158,7 @@ Launch relevant resolvers for each global `_raw.csv`:
 | `ProteinSchema_raw.csv` | `protein-resolver` | `ProteinSchema_resolved.csv` |
 | `GeneticPerturbationSchema_raw.csv` | `genetic-perturbation-resolver` | `GeneticPerturbationSchema_resolved.csv` |
 | `SmallMoleculeSchema_raw.csv` | `molecule-resolver` | `SmallMoleculeSchema_resolved.csv` |
-| `BiologicPerturbationSchema_raw.csv` | `protein-resolver` | `BiologicPerturbationSchema_resolved.csv` |
+| `ProteinSchema_raw.csv` | `protein-resolver` | `ProteinSchema_resolved.csv` |
 
 **Prompt template for resolvers:**
 
@@ -188,7 +184,7 @@ Avoid giving the resolver skill any instructions about how to resolve the data. 
     - Feature space: <feature_space> (e.g., "gene_expression")
 ```
 
-**For the ontology-resolver, genetic-perturbation-resolver, and molecule-resolver specifically**, also provide experiment subdirectories so it can write obs fragments (see B1–B4 in the resolver skill):
+**For the ontology-resolver, genetic-perturbation-resolver, and molecule-resolver specifically**, also provide experiment subdirectories so it can write obs fragments:
 
 ```
     Additional context for obs-level fragment writing:
@@ -237,10 +233,3 @@ The preparer is now complete. Hand off to the `geo-data-curator` skill for assem
 ├── Jurkat/
 │   └── ...
 ```
-
-## Column Naming Convention
-
-All resolvers output schema field names directly — no `validated_` prefix:
-- `cell_type` not `validated_cell_type`
-- `gene_name` not `validated_gene_name`
-- `organism` as resolved scientific name (e.g., "Homo sapiens", "Mus musculus")
