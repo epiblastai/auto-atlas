@@ -6,6 +6,7 @@ Usage:
 Writes <data_dir>/<accession>_metadata.json with the fetched metadata.
 """
 
+import os
 import json
 import re
 import sys
@@ -15,7 +16,8 @@ from pathlib import Path
 import requests
 from Bio import Entrez
 
-Entrez.email = "ryan@epiblast.ai"
+# Defaults to None, which works at the cost of lower rate limits
+Entrez.email = os.environ.get("EMAIL")
 
 GEO_QUERY_URL = "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi"
 
