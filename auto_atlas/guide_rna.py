@@ -9,32 +9,14 @@ import logging
 
 from auto_atlas.gget import _ASSEMBLY_MAP, _SPECIES_MAP, _resolve_single
 from auto_atlas.metadata_table import (
-    DEFAULT_REFERENCE_DB_PATH,
     GUIDE_RNAS_TABLE,
     GuideRnaRecord,
-    _custom_db_path,
-    open_reference_db,
+    get_reference_db,
 )
 from auto_atlas.types import GuideRnaResolution, ResolutionReport
 from auto_atlas.util import sql_escape
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# DB access
-# ---------------------------------------------------------------------------
-
-
-def _get_cache_db():
-    """Get DB connection for the guide RNA cache, creating the directory if needed.
-
-    Unlike ``get_reference_db()``, this does not raise if the DB directory
-    does not exist — the guide RNA cache is populated lazily during
-    resolution rather than by a download script.
-    """
-    db_path = _custom_db_path or DEFAULT_REFERENCE_DB_PATH
-    return open_reference_db(db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +75,7 @@ def _lookup_cached(sequences: list[str], species: str) -> dict[str, dict]:
 
     Returns ``{uppercase_sequence: row_dict}`` for sequences found in cache.
     """
-    db = _get_cache_db()
+    db = get_reference_db()
     if GUIDE_RNAS_TABLE not in db.list_tables().tables:
         return {}
 
@@ -121,7 +103,7 @@ def _save_to_cache(records: list[dict]) -> None:
     """Append new resolution results to the guide RNA cache table."""
     if not records:
         return
-    db = _get_cache_db()
+    db = get_reference_db()
     if GUIDE_RNAS_TABLE in db.list_tables().tables:
         table = db.open_table(GUIDE_RNAS_TABLE)
         table.add(records)

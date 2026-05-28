@@ -405,14 +405,20 @@ def _is_remote_path(path: str | Path) -> bool:
     return str(path).startswith(("s3://", "gs://", "az://"))
 
 
-def open_reference_db(db_path: str | Path | None = None) -> lancedb.DBConnection:
-    """Open (or create) the reference LanceDB."""
+def open_reference_db(
+    db_path: str | Path | None = None, **connect_kwargs
+) -> lancedb.DBConnection:
+    """Open (or create) the reference LanceDB.
+
+    Extra keyword arguments (e.g. ``storage_options``, ``api_key``,
+    ``region``) are forwarded to ``lancedb.connect``.
+    """
     if db_path is None:
         db_path = DEFAULT_REFERENCE_DB_PATH
     if not _is_remote_path(db_path):
         db_path = Path(db_path)
         db_path.mkdir(parents=True, exist_ok=True)
-    return lancedb.connect(str(db_path))
+    return lancedb.connect(str(db_path), **connect_kwargs)
 
 
 def ensure_table(
@@ -450,17 +456,22 @@ def ensure_table_chunked(
     return table
 
 
-def reference_db_exists(db_path: str | Path | None = None) -> bool:
-    """Check if the reference DB is populated (has at least the organisms table)."""
+def reference_db_exists(db_path: str | Path | None = None, **connect_kwargs) -> bool:
+    """Check if the reference DB is populated (has at least the organisms table).
+
+    When ``db_path`` is not given, the currently configured path and connection
+    options (see :func:`configure_reference_db`) are used, so existence checks
+    against a remote DB also carry credentials.
+    """
     if db_path is None:
-        db_path = _custom_db_path or DEFAULT_REFERENCE_DB_PATH
+        db_path, connect_kwargs = _resolved_db_config()
     if _is_remote_path(db_path):
-        db = lancedb.connect(str(db_path))
+        db = lancedb.connect(str(db_path), **connect_kwargs)
         return ORGANISMS_TABLE in db.list_tables().tables
     db_path = Path(db_path)
     if not db_path.exists():
         return False
-    db = lancedb.connect(str(db_path))
+    db = lancedb.connect(str(db_path), **connect_kwargs)
     return ORGANISMS_TABLE in db.list_tables().tables
 
 
@@ -469,42 +480,75 @@ def reference_db_exists(db_path: str | Path | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 _custom_db_path: str | Path | None = None
+_connect_kwargs: dict = {}
 _shared_db_connection: lancedb.DBConnection | None = None
 
 
-def set_reference_db_path(db_path: str | Path) -> None:
-    """Set a custom path for the reference DB (local or remote).
+def configure_reference_db(
+    db_path: str | Path | None = None,
+    *,
+    storage_options: dict | None = None,
+    **connect_kwargs,
+) -> None:
+    """Configure how the reference DB is opened (local or remote).
 
     Call this before any resolution functions to point at a non-default
-    location (e.g. ``"s3://bucket/ontology_resolver/"``). Resets the
-    cached connection so the next call to ``get_reference_db()`` connects
-    to the new path.
+    location and/or supply connection credentials.
+
+    Parameters
+    ----------
+    db_path:
+        Path or URI to the reference DB (e.g. ``"s3://bucket/reference_db/"``).
+        If ``None``, the existing/default path is kept (the default is
+        ``DEFAULT_REFERENCE_DB_PATH`` / the ``AUTO_ATLAS_ONTOLOGY_DB_PATH``
+        env var).
+    storage_options:
+        Object-store options forwarded to ``lancedb.connect`` — e.g. AWS
+        keys/region, or Cloudflare R2 ``aws_endpoint`` plus access keys.
+        Credentials are taken from here only; no environment variables are
+        read by auto_atlas itself.
+    **connect_kwargs:
+        Any other ``lancedb.connect`` keyword arguments (``api_key``,
+        ``region``, ``host_override``, ``client_config``, ...).
+
+    Resets the cached connection so the next ``get_reference_db()`` or
+    guide-RNA cache access reconnects with the new settings.
     """
-    global _custom_db_path, _shared_db_connection
-    _custom_db_path = db_path
+    global _custom_db_path, _connect_kwargs, _shared_db_connection
+    if db_path is not None:
+        _custom_db_path = db_path
+    kwargs = dict(connect_kwargs)
+    if storage_options is not None:
+        kwargs["storage_options"] = storage_options
+    _connect_kwargs = kwargs
     _shared_db_connection = None
+
+
+def _resolved_db_config() -> tuple[str | Path, dict]:
+    """Return the currently configured ``(db_path, connect_kwargs)``."""
+    return (_custom_db_path or DEFAULT_REFERENCE_DB_PATH, _connect_kwargs)
 
 
 def get_reference_db() -> lancedb.DBConnection:
     """Return a cached LanceDB connection to the reference DB.
 
-    Uses the path set by ``set_reference_db_path()`` if called, otherwise
-    falls back to ``DEFAULT_REFERENCE_DB_PATH``.
+    Uses the path and connection options set by ``configure_reference_db()``
+    if called, otherwise falls back to ``DEFAULT_REFERENCE_DB_PATH``.
 
     Raises
     ------
     RuntimeError
-        If the reference DB does not exist at the configured path.
+        If the reference DB does not exist at the configured local path.
     """
     global _shared_db_connection
     if _shared_db_connection is not None:
         return _shared_db_connection
-    db_path = _custom_db_path or DEFAULT_REFERENCE_DB_PATH
+    db_path, connect_kwargs = _resolved_db_config()
     if not _is_remote_path(db_path) and not Path(db_path).exists():
         raise RuntimeError(
             f"Reference database not found at {db_path}. "
             "Run `python scripts/download_references.py` to populate it, "
-            "or call `set_reference_db_path()` to point at a remote DB."
+            "or call `configure_reference_db()` to point at a remote DB."
         )
-    _shared_db_connection = open_reference_db(db_path)
+    _shared_db_connection = open_reference_db(db_path, **connect_kwargs)
     return _shared_db_connection
