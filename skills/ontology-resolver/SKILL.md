@@ -72,7 +72,7 @@ from auto_atlas.types import OntologyResolution, ResolutionReport
 Handles the standard ontology resolution workflow: control detection, resolution via `resolve_ontology_terms`, column writing, and report generation.
 
 ```
-python .claude/skills/ontology-resolver/scripts/resolve_ontology.py \
+python skills/ontology-resolver/scripts/resolve_ontology.py \
     <input_csv> <output_csv> \
     --field <obs_col>:<schema_field>:<entity> [...] \
     [--organism human] \
@@ -112,7 +112,7 @@ Corrections are applied before resolution. Build these after reviewing unresolve
 Uses the shared `gene-resolver/scripts/finalize_features.py` script if the ontology fragment needs to be written to parquet for direct LanceDB ingestion.
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     <resolved_csv> <output_parquet> <schema_module> <schema_class> \
     [--column KEY=VALUE ...]
 ```
@@ -142,7 +142,7 @@ Identify the organism from the dataset metadata or a dedicated organism column. 
 ### 3. Run the script
 
 ```bash
-python .claude/skills/ontology-resolver/scripts/resolve_ontology.py \
+python skills/ontology-resolver/scripts/resolve_ontology.py \
     /path/to/{fs}_raw_obs.csv \
     /path/to/{fs}_fragment_ontology_obs.csv \
     --field cell_type_annotation:cell_type:CELL_TYPE \
@@ -171,7 +171,7 @@ descendants = get_ontology_descendants("CL:0000084", OntologyEntity.CELL_TYPE, m
 Build a corrections JSON and re-run:
 
 ```bash
-python .claude/skills/ontology-resolver/scripts/resolve_ontology.py \
+python skills/ontology-resolver/scripts/resolve_ontology.py \
     /path/to/{fs}_raw_obs.csv \
     /path/to/{fs}_fragment_ontology_obs.csv \
     --field cell_type_annotation:cell_type:CELL_TYPE \

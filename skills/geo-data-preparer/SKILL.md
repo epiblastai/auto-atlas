@@ -165,7 +165,7 @@ Launch relevant resolvers for each global `_raw.csv`:
 ```
 Agent tool call:
   prompt: |
-    Read the skill file at .claude/skills/<resolver-name>/SKILL.md and follow its workflow.
+    Read the skill file at skills/<resolver-name>/SKILL.md and follow its workflow.
 
     Context:
     - Accession directory: <accession_dir>

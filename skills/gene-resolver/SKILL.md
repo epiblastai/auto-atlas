@@ -42,7 +42,7 @@ Each run must write a markdown report to `resolver_reports/` in the working dire
 Auto-detects identifier format (Ensembl IDs vs symbols), detects organisms from Ensembl prefixes, resolves per organism, falls back to symbol resolution for unresolved Ensembl IDs, filters placeholders, and maps organism common names to scientific names via `resolve_organisms()`.
 
 ```bash
-python .claude/skills/gene-resolver/scripts/resolve_genes.py \
+python skills/gene-resolver/scripts/resolve_genes.py \
     <input_csv> <output_csv> \
     [--ensembl-col COL] [--symbol-col COL] [--organism ORG] \
     [--index-col COL] [--dry-run]
@@ -69,7 +69,7 @@ python .claude/skills/gene-resolver/scripts/resolve_genes.py \
 Reads the resolved CSV to build a `var_index → uid` mapping, then writes `{fs}_standardized_var.csv` in each experiment subdirectory containing the original var index and a `global_feature_uid` column.
 
 ```bash
-python .claude/skills/gene-resolver/scripts/write_standardized_var.py \
+python skills/gene-resolver/scripts/write_standardized_var.py \
     <accession_dir> \
     [--resolved-csv GenomicFeatureSchema_resolved.csv] \
     [--feature-space gene_expression]
@@ -87,7 +87,7 @@ Takes the resolved CSV, adds any schema-specific columns, drops everything not i
 Does NOT do per-row pydantic validation — type coercion + parquet schema enforcement is sufficient. Type errors surface at LanceDB insertion time.
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     <resolved_csv> <output_parquet> <schema_module> <schema_class> \
     [--column KEY=VALUE ...]
 ```
@@ -97,7 +97,7 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 Example:
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     /tmp/GSE123/GenomicFeatureSchema_resolved.csv \
     /tmp/GSE123/GenomicFeatureSchema.parquet \
     homeobox_examples.multimodal_perturbation_atlas.schema \
@@ -113,7 +113,7 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 ### 1. Run the resolution script
 
 ```bash
-python .claude/skills/gene-resolver/scripts/resolve_genes.py \
+python skills/gene-resolver/scripts/resolve_genes.py \
     /path/to/GenomicFeatureSchema_raw.csv \
     /path/to/GenomicFeatureSchema_resolved.csv
 ```
@@ -125,7 +125,7 @@ Review the output for resolved/unresolved counts and any barnyard detection.
 Read the target schema to determine which columns need to be added, then run:
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     /path/to/GenomicFeatureSchema_resolved.csv \
     /path/to/GenomicFeatureSchema.parquet \
     <schema_module> <schema_class> \
@@ -140,7 +140,7 @@ The script coerces types and writes parquet — the output is ready for direct L
 After finalization, write per-experiment `{fs}_standardized_var.csv` files that map each experiment's var index to the resolved UIDs:
 
 ```bash
-python .claude/skills/gene-resolver/scripts/write_standardized_var.py \
+python skills/gene-resolver/scripts/write_standardized_var.py \
     /path/to/accession_dir \
     --resolved-csv GenomicFeatureSchema_resolved.csv \
     --feature-space gene_expression

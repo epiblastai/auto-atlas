@@ -87,7 +87,7 @@ from homeobox.schema import make_uid
 Handles the standard gene-name workflow: optional reagent splitting, control detection, method classification, gene resolution via `resolve_genes`, Ensembl ID cross-checking, UID assignment, and CSV output.
 
 ```
-python .claude/skills/genetic-perturbation-resolver/scripts/resolve_genes.py \
+python skills/genetic-perturbation-resolver/scripts/resolve_genes.py \
     <input_csv> <gene_column> <method> \
     [--organism human] \
     [--ensembl-column ensembl_gene_id] \
@@ -116,7 +116,7 @@ The script writes `GeneticPerturbationSchema_resolved.csv` with these columns po
 Uses the shared `gene-resolver/scripts/finalize_features.py` script. Takes the resolved CSV, drops everything not in the schema (including `resolved` and raw columns), coerces types, and writes parquet with correct types for direct LanceDB ingestion.
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     <resolved_csv> <output_parquet> <schema_module> <schema_class> \
     [--column KEY=VALUE ...]
 ```
@@ -126,7 +126,7 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 Example:
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     /tmp/GSE123/GeneticPerturbationSchema_resolved.csv \
     /tmp/GSE123/GeneticPerturbationSchema.parquet \
     homeobox_examples.multimodal_perturbation_atlas.schema \
@@ -251,7 +251,7 @@ Before finalizing:
 After resolution and any dataset-specific enrichment (A6/A7), run the finalize script:
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     /path/to/GeneticPerturbationSchema_resolved.csv \
     /path/to/GeneticPerturbationSchema.parquet \
     <schema_module> <schema_class>

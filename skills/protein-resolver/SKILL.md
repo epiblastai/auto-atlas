@@ -43,7 +43,7 @@ Each run must write a markdown report to `resolver_reports/` in the working dire
 Auto-detects protein identifier column, separates isotype controls (IgG1, IgG2a, etc.) and other controls, resolves actual proteins via `resolve_proteins()`, and maps organism to scientific name via `resolve_organisms()`.
 
 ```bash
-python .claude/skills/protein-resolver/scripts/resolve_proteins.py \
+python skills/protein-resolver/scripts/resolve_proteins.py \
     <input_csv> <output_csv> \
     [--protein-col COL] [--organism ORG] \
     [--index-col COL] [--dry-run]
@@ -73,7 +73,7 @@ python .claude/skills/protein-resolver/scripts/resolve_proteins.py \
 Reads the resolved CSV to build a `var_index → uid` mapping, then writes `{fs}_standardized_var.csv` in each experiment subdirectory containing the original var index and a `global_feature_uid` column.
 
 ```bash
-python .claude/skills/protein-resolver/scripts/write_standardized_var.py \
+python skills/protein-resolver/scripts/write_standardized_var.py \
     <accession_dir> \
     [--resolved-csv Protein_resolved.csv] \
     [--feature-space protein]
@@ -91,7 +91,7 @@ Takes the resolved CSV, adds any schema-specific columns, drops everything not i
 Does NOT do per-row pydantic validation — type coercion + parquet schema enforcement is sufficient. Type errors surface at LanceDB insertion time.
 
 ```bash
-python .claude/skills/protein-resolver/scripts/finalize_features.py \
+python skills/protein-resolver/scripts/finalize_features.py \
     <resolved_csv> <output_parquet> <schema_module> <schema_class> \
     [--column KEY=VALUE ...]
 ```
@@ -101,7 +101,7 @@ python .claude/skills/protein-resolver/scripts/finalize_features.py \
 Example:
 
 ```bash
-python .claude/skills/protein-resolver/scripts/finalize_features.py \
+python skills/protein-resolver/scripts/finalize_features.py \
     /tmp/GSE123/Protein_resolved.csv \
     /tmp/GSE123/ProteinSchema.parquet \
     homeobox_examples.multimodal_perturbation_atlas.schema \
@@ -117,7 +117,7 @@ python .claude/skills/protein-resolver/scripts/finalize_features.py \
 ### 1. Run the resolution script
 
 ```bash
-python .claude/skills/protein-resolver/scripts/resolve_proteins.py \
+python skills/protein-resolver/scripts/resolve_proteins.py \
     /path/to/Protein_raw.csv \
     /path/to/Protein_resolved.csv
 ```
@@ -129,7 +129,7 @@ Review the output for resolved/unresolved counts and isotype control detection.
 Read the target schema to determine which columns need to be added, then run:
 
 ```bash
-python .claude/skills/protein-resolver/scripts/finalize_features.py \
+python skills/protein-resolver/scripts/finalize_features.py \
     /path/to/Protein_resolved.csv \
     /path/to/ProteinSchema.parquet \
     <schema_module> <schema_class> \
@@ -144,7 +144,7 @@ The script coerces types and writes parquet — the output is ready for direct L
 After finalization, write per-experiment `{fs}_standardized_var.csv` files that map each experiment's var index to the resolved UIDs:
 
 ```bash
-python .claude/skills/protein-resolver/scripts/write_standardized_var.py \
+python skills/protein-resolver/scripts/write_standardized_var.py \
     /path/to/accession_dir \
     --resolved-csv Protein_resolved.csv \
     --feature-space protein
