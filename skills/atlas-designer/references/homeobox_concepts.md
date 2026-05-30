@@ -27,7 +27,16 @@ spaces are added with `register_spec(...)`.
 
 Every obs table subclasses `HoxBaseSchema` and declares ≥1 pointer field with
 `PointerField.declare(feature_space=...)`. The annotation picks how rows
-address data in the zarr group:
+address data in the zarr group. For feature spaces with registries, also pass
+`feature_registry_schema=<FeatureBaseSchema subclass>` so code parsers can
+visualize the obs-to-registry relationship:
+
+```python
+gene_expression: SparseZarrPointer | None = PointerField.declare(
+    feature_space="gene_expression",
+    feature_registry_schema=GeneFeatureSchema,
+)
+```
 
 | Pointer | Addresses | Use for |
 |---------|-----------|---------|
@@ -45,6 +54,8 @@ Notes that recur:
   modalities they lack. Each pointer also gets an auto `has_<field>` flag.
 - A field name may differ from its `feature_space`, so one space can back
   several columns (e.g. `cycle1_*`, `cycle2_*`).
+- `feature_registry_schema` is lightweight Python metadata only. It is not
+  stored in Arrow metadata.
 
 ## Stable UIDs
 
@@ -73,12 +84,72 @@ shared across the modalities of one multimodal batch and referenced by
 `feature_space`, `n_rows`, `layout_uid`, `created_at`) are filled by ingestion —
 subclass only to add provenance.
 
-## Foreign keys
+## Informational field markers
 
-Homeobox enforces no relational constraints. Make references explicit: name
-them `*_uid` / `*_uids`, and comment each with its target table. For
-polymorphic references, also store a type column that says which table each uid
-belongs to.
+These markers annotate ordinary schema columns to describe how their values
+relate to other tables, ontologies, or external databases. They make schemas
+self-documenting and let tooling (parsers, agents, visualizers) reason about
+relationships. None have any runtime effect today: they are not written to
+Arrow metadata and Homeobox does not enforce them as constraints, though
+future versions may validate or enforce them.
+
+**`ForeignKeyField`** — a scalar reference to another schema field:
+
+```python
+publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
+target_chromosome: str | None = ForeignKeyField.declare(
+    target_schema=ReferenceSequenceSchema,
+    target_field="genbank_accession",
+    default=None,
+)
+```
+
+**`PolymorphicForeignKeyField`** — like `ForeignKeyField`, but the target schema
+is chosen at runtime by a parallel discriminator column rather than fixed at
+declaration time. Use it when the same value column can refer to different
+tables depending on another field:
+
+```python
+perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+    type_field="perturbation_types",
+    variants={
+        "small_molecule": SmallMoleculeSchema,
+        "genetic_perturbation": GeneticPerturbationSchema,
+        "biologic_perturbation": BiologicPerturbationSchema,
+    },
+)
+perturbation_types: list[str] | None
+```
+
+**`OntologyAlignedField`** — marks a column as aligned to an ontology:
+
+```python
+gene_id: str = OntologyAlignedField.declare(ontology_name="ensembl")
+```
+
+**`CrossReferenceField`** — marks a column as a cross-reference into an external
+database (DOI, PubMed, PubChem, UniProt, …). This is the database analogue of
+`OntologyAlignedField`: use `OntologyAlignedField` when the column aligns to an
+ontology and `CrossReferenceField` when it references an external database
+record:
+
+```python
+doi: str | None = CrossReferenceField.declare(database_name="doi")
+pubchem_cid: str | None = CrossReferenceField.declare(database_name="pubchem")
+```
+
+Name scalar references `*_uid` where possible. Prefer
+`PolymorphicForeignKeyField` over hand-rolling a separate type column for
+polymorphic references; when you must, comment the relationship explicitly.
+
+Import all four from `homeobox.schema`:
+
+```python
+from homeobox.schema import (
+    ForeignKeyField, PolymorphicForeignKeyField,
+    OntologyAlignedField, CrossReferenceField,
+)
+```
 
 ## Validating a schema
 

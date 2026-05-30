@@ -1,19 +1,21 @@
 ---
 name: atlas-designer
-description: Use when designing or writing a homeobox atlas schema.py file. Covers choosing HoxBaseSchema, FeatureBaseSchema, DatasetSchema, StableUIDBaseSchema, and LanceModel tables; declaring PointerField and StableUIDField correctly; documenting foreign keys; and producing schema code for a new atlas without writing ingestion scripts.
+description: Use when designing or writing a homeobox atlas schema.py file. Covers choosing HoxBaseSchema, FeatureBaseSchema, DatasetSchema, StableUIDBaseSchema, and LanceModel tables; declaring PointerField with feature_registry_schema, StableUIDField, and ForeignKeyField correctly; and producing schema code for a new atlas without writing ingestion scripts.
 ---
 
 # Atlas Designer
 
 Design a `schema.py` for a new homeobox atlas. The output should be a Python schema file defining the atlas' table contracts, not ingestion logic.
 
-Primary references when details matter:
+References:
 
+- Core mechanics (feature spaces, pointer types, stable UIDs, datasets table, FKs): `references/homeobox_concepts.md`. Always read this file.
+- Complex bundled example: `references/multimodal_perturbation_atlas_schema.py`. Read this only when a richer example is useful, and do not copy its biological model unless the requested atlas matches it.
+
+Official docs pages for homeobox:
 - Homeobox schemas: https://epiblast.ai/homeobox/schemas/
 - Homeobox feature registries: https://epiblast.ai/homeobox/feature_registries/
 - Homeobox atlas tutorial: https://epiblast.ai/homeobox/atlas/
-- Core mechanics (feature spaces, pointer types, stable UIDs, datasets table, FKs): `references/homeobox_concepts.md`. Read this when the underlying model is unclear.
-- Complex bundled example: `references/multimodal_perturbation_atlas_schema.py`. Read this only when a richer example is useful, and do not copy its biological model unless the requested atlas matches it.
 
 ## Workflow
 
@@ -31,7 +33,7 @@ Primary references when details matter:
    - optional schema maps such as `REGISTRY_SCHEMAS` and `FK_TABLE_SCHEMAS`
    - obs schema(s) subclassing `HoxBaseSchema`
    - optional materialized index/summary tables
-3. Include inline comments for every non-obvious biological meaning and every foreign key.
+3. Include inline comments for every non-obvious biological meaning. Use `ForeignKeyField` for simple scalar foreign keys.
 4. Add pydantic validators only for real invariants: enum membership, equal-length parallel lists, generated search strings, derived stable-UID fields, or deterministic materialized IDs.
 5. Validate the schema module by importing it and creating a temporary atlas with `create_or_open_atlas`.
 
@@ -53,14 +55,16 @@ Use plain `LanceModel` for relationship tables, sections, materialized indexes, 
 
 Declare pointer fields only on `HoxBaseSchema` subclasses.
 
-Use `PointerField.declare(feature_space=...)` on every pointer-typed field:
+Use `PointerField.declare(feature_space=...)` on every pointer-typed field. When the feature space has a feature registry, include `feature_registry_schema=...`:
 
 ```python
 gene_expression: SparseZarrPointer | None = PointerField.declare(
-    feature_space="gene_expression"
+    feature_space="gene_expression",
+    feature_registry_schema=GeneFeatureSchema,
 )
 protein_abundance: DenseZarrPointer | None = PointerField.declare(
-    feature_space="protein_abundance"
+    feature_space="protein_abundance",
+    feature_registry_schema=ProteinFeatureSchema,
 )
 image_tiles: DenseZarrPointer | None = PointerField.declare(
     feature_space="image_tiles"
@@ -72,6 +76,7 @@ Rules:
 - The annotation must match the registered feature-space spec's pointer type.
 - Use `| None`; multimodal rows may omit modalities they do not have.
 - The Python field name may differ from `feature_space`; use this for multiple columns backed by the same feature space, such as `cycle1_image_tiles` and `cycle2_image_tiles`.
+- `feature_registry_schema` is Python-only metadata for schema parsing/visualization. It is not stored in Arrow metadata.
 - If a feature space has no feature registry, it may still have a pointer, but it should not appear in `registry_schemas`.
 - Never set a pointer field to bare `None`; pointer-typed fields must use `PointerField.declare(...)`.
 
@@ -111,17 +116,21 @@ For bulk DataFrame workflows, ensure the derived stable field is populated befor
 
 ## Foreign Keys
 
-Homeobox does not enforce relational constraints automatically, so foreign-key fields must be obvious in names and comments. Use `*_uid` for scalar references and `*_uids` for lists.
+Use `ForeignKeyField.declare(...)` for simple scalar references to another schema field. This stores lightweight Pydantic metadata for schema parsing and visualization; it is not stored in Arrow metadata and does not currently enforce constraints. Use `*_uid` names for references.
 
-Good comments:
+Common examples:
 
 ```python
-publication_uid: str | None  # Foreign key to PublicationSchema.uid
-donor_uid: str | None        # Foreign key to DonorSchema.uid if available
-feature_uid: str             # Foreign key to the relevant feature registry's uid
+publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
+donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
+target_chromosome: str | None = ForeignKeyField.declare(
+    target_schema=ReferenceSequenceSchema,
+    target_field="genbank_accession",
+    default=None,
+)
 ```
 
-For polymorphic references, store enough information to identify the target table:
+For polymorphic or list references, keep explicit names and comments until Homeobox supports richer FK metadata:
 
 ```python
 perturbation_uids: list[str] | None   # Foreign key values.
@@ -174,6 +183,7 @@ from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema as HoxDatasetSchema,
     FeatureBaseSchema,
+    ForeignKeyField,
     HoxBaseSchema,
     PointerField,
     StableUIDBaseSchema,
@@ -195,7 +205,7 @@ class PublicationSchema(StableUIDBaseSchema):
 
 
 class AtlasDatasetSchema(HoxDatasetSchema):
-    publication_uid: str | None  # Foreign key to PublicationSchema.uid
+    publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
     accession_database: str | None
     accession_id: str | None
     organism: str | None
@@ -218,10 +228,11 @@ class CellIndex(HoxBaseSchema):
     organism: str
     assay: str
     cell_type: str | None = None
-    donor_uid: str | None = None  # Foreign key to DonorSchema.uid if available
+    donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
 
     gene_expression: SparseZarrPointer | None = PointerField.declare(
-        feature_space="gene_expression"
+        feature_space="gene_expression",
+        feature_registry_schema=GeneFeatureSchema,
     )
 
     @model_validator(mode="after")
@@ -235,11 +246,13 @@ class CellIndex(HoxBaseSchema):
 
 - Every obs schema subclasses `HoxBaseSchema` and has at least one declared pointer field.
 - Every pointer field uses `PointerField.declare(feature_space=...)`, has a `| None` type, and matches the registered pointer type.
+- Pointer fields for feature spaces with registries include `feature_registry_schema=...`.
 - Feature registries subclass `FeatureBaseSchema`, not plain `LanceModel`.
 - Durable non-feature entity tables subclass `StableUIDBaseSchema` when deduplication matters.
 - Every schema has at most one `StableUIDField`.
+- Simple scalar relationships use `ForeignKeyField.declare(...)`; polymorphic/list references have clear companion type fields and comments.
 - Composite stable identities are explicit derived fields.
-- Foreign keys are named `*_uid` or `*_uids` and documented inline with their target schema.
+- Foreign key-like fields are named `*_uid` or `*_uids`.
 - Dataset provenance fields live on a `DatasetSchema` subclass.
 - Validators encode real invariants and generated fields only.
 - The schema avoids dataset-specific one-offs unless the atlas itself requires them.
