@@ -81,7 +81,7 @@ from homeobox.schema import make_uid
 Handles the standard compound-name workflow: control detection, molecule resolution via `resolve_molecules`, UID assignment, and CSV output.
 
 ```
-python .claude/skills/molecule-resolver/scripts/resolve_molecules.py \
+python skills/molecule-resolver/scripts/resolve_molecules.py \
     <input_csv> <compound_column> \
     [--smiles-column COL] \
     [--vendor-column COL] \
@@ -107,7 +107,7 @@ The script writes `SmallMolecule_resolved.csv` with these columns populated: `na
 Uses the shared `gene-resolver/scripts/finalize_features.py` script. Takes the resolved CSV, drops everything not in the schema (including `resolved` and raw columns), coerces types, and writes parquet with correct types for direct LanceDB ingestion.
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     <resolved_csv> <output_parquet> <schema_module> <schema_class> \
     [--column KEY=VALUE ...]
 ```
@@ -117,7 +117,7 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 Example:
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     /tmp/GSE123/SmallMolecule_resolved.csv \
     /tmp/GSE123/SmallMoleculeSchema.parquet \
     homeobox_examples.multimodal_perturbation_atlas.schema \
@@ -221,7 +221,7 @@ Before finalizing:
 After resolution and any dataset-specific enrichment (A4), run the finalize script:
 
 ```bash
-python .claude/skills/gene-resolver/scripts/finalize_features.py \
+python skills/gene-resolver/scripts/finalize_features.py \
     /path/to/SmallMolecule_resolved.csv \
     /path/to/SmallMoleculeSchema.parquet \
     <schema_module> <schema_class>

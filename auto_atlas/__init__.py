@@ -12,7 +12,7 @@ from auto_atlas.genes import (
 )
 from auto_atlas.gget import annotate_genomic_coordinates
 from auto_atlas.guide_rna import resolve_guide_sequences
-from auto_atlas.metadata_table import get_reference_db, set_reference_db_path
+from auto_atlas.metadata_table import configure_reference_db, get_reference_db
 from auto_atlas.molecules import (
     canonicalize_smiles,
     clean_compound_name,
@@ -84,7 +84,7 @@ __all__ = [
     "OntologyResolution",
     "ResolutionReport",
     # Reference DB
-    "set_reference_db_path",
+    "configure_reference_db",
     "get_reference_db",
     # Genes
     "resolve_genes",

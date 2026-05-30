@@ -42,8 +42,8 @@ Run these via Bash from the **repository root**.
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
-| `scripts/write_publication_parquet.py` | `python .claude/skills/publication-resolver/scripts/write_publication_parquet.py <data_dir> <schema_module> <pub_schema_class> [--section-schema <section_class>] [--pmid PMID] [--title TITLE]` | **Primary.** Fetch publication metadata, write validated parquet files + publication.json |
-| `scripts/write_publication_json.py` | `python .claude/skills/publication-resolver/scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | **Legacy.** Write only publication.json (no schema validation or parquet) |
+| `scripts/write_publication_parquet.py` | `python skills/publication-resolver/scripts/write_publication_parquet.py <data_dir> <schema_module> <pub_schema_class> [--section-schema <section_class>] [--pmid PMID] [--title TITLE]` | **Primary.** Fetch publication metadata, write validated parquet files + publication.json |
+| `scripts/write_publication_json.py` | `python skills/publication-resolver/scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | **Legacy.** Write only publication.json (no schema validation or parquet) |
 
 ### `write_publication_parquet.py`
 
@@ -65,7 +65,7 @@ The primary script. Prefer `--pmid` when you have one. Supports three identifier
 Example:
 
 ```bash
-python .claude/skills/publication-resolver/scripts/write_publication_parquet.py \
+python skills/publication-resolver/scripts/write_publication_parquet.py \
     /tmp/geo_agent/GSE123456 \
     homeobox_examples.multimodal_perturbation_atlas.schema \
     PublicationSchema \
@@ -171,7 +171,7 @@ section_records = [
 Build DataFrames, coerce types against the target schema, and write parquet. The script handles this automatically:
 
 ```bash
-python .claude/skills/publication-resolver/scripts/write_publication_parquet.py \
+python skills/publication-resolver/scripts/write_publication_parquet.py \
     /tmp/geo_agent/GSE123456 \
     homeobox_examples.multimodal_perturbation_atlas.schema \
     PublicationSchema \
