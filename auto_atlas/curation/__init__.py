@@ -1,23 +1,37 @@
-"""Auditable find-and-replace curation for Lance tables."""
+"""Auditable column-operation curation for Lance tables."""
 
 from auto_atlas.curation.applicator import CurationApplicator
 from auto_atlas.curation.audit import CurationAuditStore, default_audit_db_path
 from auto_atlas.curation.propose import propose_column_replacements
 from auto_atlas.curation.types import (
+    AddColumn,
     AppliedChange,
     ApplyResult,
-    ColumnReplacement,
+    CastColumn,
+    CurationOp,
     CurationTransaction,
+    DropColumn,
+    OpKind,
+    RenameColumn,
+    ReplaceValue,
+    SetColumn,
     TransactionStatus,
 )
 
 __all__ = [
+    "AddColumn",
     "AppliedChange",
     "ApplyResult",
-    "ColumnReplacement",
+    "CastColumn",
     "CurationApplicator",
     "CurationAuditStore",
+    "CurationOp",
     "CurationTransaction",
+    "DropColumn",
+    "OpKind",
+    "RenameColumn",
+    "ReplaceValue",
+    "SetColumn",
     "TransactionStatus",
     "default_audit_db_path",
     "propose_column_replacements",

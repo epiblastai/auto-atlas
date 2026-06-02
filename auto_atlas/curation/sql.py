@@ -35,3 +35,50 @@ def build_where_clause(column: str, old_value: Any, field_type: pa.DataType) -> 
         return f"{column} IS NULL"
     literal = format_sql_literal(old_value, field_type)
     return f"{column} = {literal}"
+
+
+def arrow_type_from_alias(alias: str) -> pa.DataType:
+    """Resolve a serialized Arrow type alias (e.g. "int64", "string") to a type."""
+    return pa.type_for_alias(alias)
+
+
+def infer_arrow_type(value: Any) -> pa.DataType:
+    """Pick an Arrow type for a Python constant (used when none was declared)."""
+    # bool must precede int since bool is a subclass of int.
+    if isinstance(value, bool):
+        return pa.bool_()
+    if isinstance(value, int):
+        return pa.int64()
+    if isinstance(value, float):
+        return pa.float64()
+    return pa.string()
+
+
+def build_add_column_expr(value: Any, data_type: str | None) -> str:
+    """Build the constant SQL expression for an add-column with a fixed value."""
+    if value is None:
+        raise ValueError("build_add_column_expr requires a non-None value")
+    field_type = arrow_type_from_alias(data_type) if data_type else infer_arrow_type(value)
+    return format_sql_literal(value, field_type)
+
+
+# Map a normalized Arrow type to the SQL keyword its DataFusion CAST uses.
+# Lance's alter_columns only re-types within a family; cross-family coercion
+# (e.g. string -> int) must go through a SQL ``cast(col as <keyword>)``.
+_SQL_CAST_KEYWORDS = {
+    "int8": "tinyint",
+    "int16": "smallint",
+    "int32": "int",
+    "int64": "bigint",
+    "float": "float",
+    "double": "double",
+    "bool": "boolean",
+    "string": "string",
+    "large_string": "string",
+}
+
+
+def arrow_alias_to_sql_cast(alias: str) -> str:
+    """Translate a serialized Arrow type alias to a SQL CAST target keyword."""
+    key = str(arrow_type_from_alias(alias))
+    return _SQL_CAST_KEYWORDS.get(key, key)

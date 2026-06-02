@@ -6,11 +6,18 @@ No coupling to ingestion_utils.py or LanceDB.
 """
 
 from auto_atlas.curation import (
+    AddColumn,
     ApplyResult,
-    ColumnReplacement,
+    CastColumn,
     CurationApplicator,
     CurationAuditStore,
+    CurationOp,
     CurationTransaction,
+    DropColumn,
+    OpKind,
+    RenameColumn,
+    ReplaceValue,
+    SetColumn,
     TransactionStatus,
     default_audit_db_path,
     propose_column_replacements,
@@ -85,11 +92,18 @@ from auto_atlas.types import (
 
 __all__ = [
     # Curation
+    "AddColumn",
     "ApplyResult",
-    "ColumnReplacement",
+    "CastColumn",
     "CurationApplicator",
     "CurationAuditStore",
+    "CurationOp",
     "CurationTransaction",
+    "DropColumn",
+    "OpKind",
+    "RenameColumn",
+    "ReplaceValue",
+    "SetColumn",
     "TransactionStatus",
     "default_audit_db_path",
     "propose_column_replacements",
