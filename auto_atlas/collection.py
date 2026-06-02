@@ -17,6 +17,10 @@ class FileTypeTag(StrEnum):
     # Libraries have a column that can be linked to another column in
     # an OBS or VAR file.
     LIBRARY = "library"
+    # Use this tag for free-form informational files that are not tables
+    # or arrays (e.g. sample preparation protocols, dataset READMEs, or
+    # publication texts). These are coalesced into an other_files/ subdir.
+    OTHER = "other"
 
 
 @dataclass(frozen=True)
@@ -86,10 +90,19 @@ class Dataset:
 
 
 class Collection:
-    """We do not make accomodation for general free-form metadata files.
-    For example, sample preparation protocols, dataset READMEs, or publication
-    texts. Instead datasets and collections are for tables and arrays only.
+    """A collection groups multiple datasets that share a root directory.
+
+    Datasets hold tables and arrays. Collection-level files added with
+    Collection.add_file are not tied to a single dataset: use the LIBRARY tag
+    for files linked from obs/var tables, or the OTHER tag for free-form
+    informational files (sample preparation protocols, dataset READMEs,
+    publication texts).
+
+    On coalesce, dataset files move under root_dir/<dataset_name>/, OTHER files
+    move under root_dir/other_files/, and other shared files move into root_dir.
     """
+
+    OTHER_FILES_DIR = "other_files"
 
     def __init__(self, root_dir: str):
         os.makedirs(root_dir, exist_ok=True)
@@ -98,9 +111,11 @@ class Collection:
         self._datasets: dict[str, Dataset] = {}
         self._coalesced_datasets: set[str] = set()
 
-        # Collection-level files MUST be shared across all datasets
-        # Though not all datasets are required to reference a shared file
+        # Collection-level files that are shared across datasets (LIBRARY) or
+        # are free-form informational files (OTHER). Not all datasets are
+        # required to reference a shared file.
         self._shared_tagged_files: dict[str, TaggedFile] = {}
+        self._coalesced_files: set[str] = set()
 
     @property
     def datasets(self) -> list[str]:
@@ -123,51 +138,83 @@ class Collection:
 
         self._shared_tagged_files[file_path] = TaggedFile(file_path, tag, feature_space)
 
-    def coalesce_datasets(self, copy: bool = True) -> None:
-        # Copies or moves the files in each not-yet-coalesced dataset to
-        # root_dir / dataset_name, keeping the original filenames. Tracked paths
-        # are rewritten to the new locations. This is a local-filesystem
-        # operation (shutil does not handle s3 urls).
+    def _move_files(
+        self,
+        paths: list[str],
+        dest_dir: str,
+        copy: bool,
+    ) -> list[tuple[str, str]]:
+        # Copy or move files into dest_dir, keeping their original filenames,
+        # and return the list of (old_path, new_path). Collisions (two files
+        # sharing a basename, or an existing destination) are checked up front
+        # so nothing is moved when the group is invalid. This is a
+        # local-filesystem operation (shutil does not handle s3 urls).
+        os.makedirs(dest_dir, exist_ok=True)
+
+        moves: list[tuple[str, str]] = []
+        seen_dests: set[str] = set()
+        for src in paths:
+            dest = os.path.join(dest_dir, os.path.basename(src))
+            if dest in seen_dests:
+                raise ValueError(f"basename collision: multiple files map to {dest}")
+            if os.path.exists(dest):
+                raise ValueError(f"destination {dest} already exists; refusing to overwrite")
+            seen_dests.add(dest)
+            moves.append((src, dest))
+
+        for src, dest in moves:
+            if copy:
+                shutil.copy2(src, dest)
+            else:
+                shutil.move(src, dest)
+
+        return moves
+
+    def coalesce(self, copy: bool = True) -> None:
+        # Organize files on disk into root_dir. Each not-yet-coalesced dataset's
+        # files go to root_dir/<dataset_name>/; collection-level OTHER files go
+        # to root_dir/other_files/ and other shared files go into root_dir.
+        # Tracked paths are rewritten to the new locations and re-running is a
+        # no-op for anything already coalesced.
         for name, dataset in self._datasets.items():
             if name in self._coalesced_datasets:
                 continue
 
-            dest_dir = os.path.join(self.root_dir, name)
-            os.makedirs(dest_dir, exist_ok=True)
-
-            # Map source -> dest first so we can catch collisions before moving
-            # anything (two files sharing a basename, or an existing dest).
-            moves: list[tuple[str, str]] = []
-            seen_dests: set[str] = set()
-            for src in dataset.files:
-                dest = os.path.join(dest_dir, os.path.basename(src))
-                if dest in seen_dests:
-                    raise ValueError(
-                        f"basename collision in dataset {name}: multiple files map to {dest}"
-                    )
-                if os.path.exists(dest):
-                    raise ValueError(f"destination {dest} already exists; refusing to overwrite")
-                seen_dests.add(dest)
-                moves.append((src, dest))
-
+            moves = self._move_files(dataset.files, os.path.join(self.root_dir, name), copy)
             for src, dest in moves:
-                if copy:
-                    shutil.copy2(src, dest)
-                else:
-                    shutil.move(src, dest)
                 dataset._rename_file(src, dest)
-
             self._coalesced_datasets.add(name)
+
+        pending = [
+            tf for path, tf in self._shared_tagged_files.items()
+            if path not in self._coalesced_files
+        ]
+        groups = (
+            ([tf for tf in pending if tf.tag != FileTypeTag.OTHER], self.root_dir),
+            (
+                [tf for tf in pending if tf.tag == FileTypeTag.OTHER],
+                os.path.join(self.root_dir, self.OTHER_FILES_DIR),
+            ),
+        )
+        for group, dest_dir in groups:
+            if not group:
+                continue
+
+            moves = self._move_files([tf.path for tf in group], dest_dir, copy)
+            for src, dest in moves:
+                tf = self._shared_tagged_files.pop(src)
+                self._shared_tagged_files[dest] = TaggedFile(dest, tf.tag, tf.feature_space)
+                self._coalesced_files.add(dest)
 
     def dumps(self) -> str:
         # Creates a string with json that lists file paths and their tags,
-        # including dataset subdirectories. Only coalesced datasets may be
-        # dumped, so the manifest always reflects organized, on-disk locations.
+        # including dataset subdirectories. Everything must be coalesced first,
+        # so the manifest always reflects organized, on-disk locations.
         uncoalesced = [name for name in self._datasets if name not in self._coalesced_datasets]
+        uncoalesced += [p for p in self._shared_tagged_files if p not in self._coalesced_files]
         if uncoalesced:
             raise ValueError(
-                f"datasets {uncoalesced} have not been coalesced; "
-                f"run coalesce_datasets() before dumps()"
+                f"{uncoalesced} have not been coalesced; run coalesce() before dumps()"
             )
 
         payload = {
