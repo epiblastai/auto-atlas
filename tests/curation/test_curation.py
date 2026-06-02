@@ -10,10 +10,15 @@ import pyarrow as pa
 import pytest
 
 from auto_atlas.curation import (
-    ColumnReplacement,
+    AddColumn,
+    CastColumn,
     CurationApplicator,
     CurationAuditStore,
     CurationTransaction,
+    DropColumn,
+    RenameColumn,
+    ReplaceValue,
+    SetColumn,
     TransactionStatus,
     default_audit_db_path,
     propose_column_replacements,
@@ -107,7 +112,7 @@ def test_apply_round_trip(atlas_dirs):
     txn = CurationTransaction(
         table_name="gene_expression",
         changes=[
-            ColumnReplacement(
+            ReplaceValue(
                 column="gene_symbol",
                 old_value="BRCA2",
                 new_value="BRCA2_CANON",
@@ -155,7 +160,7 @@ def test_apply_null_old_value(atlas_dirs):
     txn = CurationTransaction(
         table_name="features",
         changes=[
-            ColumnReplacement(
+            ReplaceValue(
                 column="gene_symbol",
                 old_value=None,
                 new_value="UNKNOWN",
@@ -193,7 +198,7 @@ def test_dry_run_does_not_mutate_lance(atlas_dirs):
     txn = CurationTransaction(
         table_name="gene_expression",
         changes=[
-            ColumnReplacement(
+            ReplaceValue(
                 column="gene_symbol",
                 old_value="TP53",
                 new_value="TP53_CANON",
@@ -236,7 +241,7 @@ def test_parallel_columns_on_same_table(atlas_dirs):
     gene_txn = CurationTransaction(
         table_name="features",
         changes=[
-            ColumnReplacement(
+            ReplaceValue(
                 column="gene_symbol",
                 old_value="OLD_G",
                 new_value="NEW_G",
@@ -247,7 +252,7 @@ def test_parallel_columns_on_same_table(atlas_dirs):
     protein_txn = CurationTransaction(
         table_name="features",
         changes=[
-            ColumnReplacement(
+            ReplaceValue(
                 column="uniprot_id",
                 old_value="OLD_P",
                 new_value="NEW_P",
@@ -286,7 +291,7 @@ def test_allowed_columns_rejects_foreign_column(atlas_dirs):
     txn = CurationTransaction(
         table_name="gene_expression",
         changes=[
-            ColumnReplacement(
+            ReplaceValue(
                 column="ensembl_id",
                 old_value="ENS1",
                 new_value="ENSX",
@@ -311,7 +316,7 @@ def test_get_revert_version(atlas_dirs):
     txn = CurationTransaction(
         table_name="gene_expression",
         changes=[
-            ColumnReplacement(
+            ReplaceValue(
                 column="gene_symbol",
                 old_value="TP53",
                 new_value="TP53_CANON",
@@ -329,3 +334,235 @@ def test_get_revert_version(atlas_dirs):
 
     assert revert_version == version_before
     assert result.lance_version_before == version_before
+
+
+def test_add_column_constant(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            AddColumn(
+                column="organism",
+                value="human",
+                tool="geo_metadata",
+                reason="from series metadata",
+                source="GSE123456",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn, allowed_columns={"organism"})
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    assert result.applied_changes[0].rows_updated is None
+
+    db = lancedb.connect(db_uri)
+    rows = db.open_table("gene_expression").to_arrow().to_pydict()
+    assert rows["organism"] == ["human", "human", "human"]
+
+    store = CurationAuditStore(audit_path)
+    try:
+        record = store.get_transaction(result.transaction_id)
+        change = record["changes"][0]
+        assert change["op_kind"] == "add_column"
+        assert change["new_value"] == "human"
+        assert change["source"] == "GSE123456"
+    finally:
+        store.close()
+
+
+def test_add_column_rejects_existing(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[AddColumn(column="gene_symbol", value="x", tool="t")],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        with pytest.raises(ValueError, match="already exists"):
+            applicator.apply(txn)
+    finally:
+        applicator.close()
+
+
+def test_add_then_set_in_one_transaction(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            AddColumn(column="organism", data_type="string", tool="t"),
+            SetColumn(column="organism", new_value="mouse", tool="t"),
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn)
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    db = lancedb.connect(db_uri)
+    rows = db.open_table("gene_expression").to_arrow().to_pydict()
+    assert rows["organism"] == ["mouse", "mouse", "mouse"]
+
+
+def test_rename_column(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            RenameColumn(
+                column="ensembl_id",
+                new_name="ensembl_gene_id",
+                tool="schema_align",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn, allowed_columns={"ensembl_gene_id"})
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    db = lancedb.connect(db_uri)
+    names = db.open_table("gene_expression").schema.names
+    assert "ensembl_gene_id" in names
+    assert "ensembl_id" not in names
+
+    store = CurationAuditStore(audit_path)
+    try:
+        change = store.get_transaction(result.transaction_id)["changes"][0]
+        assert change["op_kind"] == "rename_column"
+        assert change["target_column"] == "ensembl_gene_id"
+    finally:
+        store.close()
+
+
+def test_rename_rejects_existing_target(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[RenameColumn(column="ensembl_id", new_name="gene_symbol", tool="t")],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        with pytest.raises(ValueError, match="already exists"):
+            applicator.apply(txn)
+    finally:
+        applicator.close()
+
+
+def test_drop_column_exempt_from_allowed_columns(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[DropColumn(column="ensembl_id", tool="finalize", reason="not in schema")],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        # ensembl_id is NOT in allowed_columns, but drops bypass the gate.
+        result = applicator.apply(txn, allowed_columns={"gene_symbol"})
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    db = lancedb.connect(db_uri)
+    assert "ensembl_id" not in db.open_table("gene_expression").schema.names
+
+
+def test_cast_column(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    db = lancedb.connect(db_uri)
+    db.create_table("t", data=pa.table({"replicate": [1, 2, 3]}), mode="overwrite")
+
+    txn = CurationTransaction(
+        table_name="t",
+        changes=[CastColumn(column="replicate", data_type="string", tool="finalize")],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn)
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    table = db.open_table("t")
+    assert pa.types.is_string(table.schema.field("replicate").type)
+    assert table.to_arrow()["replicate"].to_pylist() == ["1", "2", "3"]
+
+
+def test_set_column_with_sql_expression(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    db = lancedb.connect(db_uri)
+    db.create_table("t", data=pa.table({"a": [1, 2], "b": [10, 20]}), mode="overwrite")
+
+    txn = CurationTransaction(
+        table_name="t",
+        changes=[SetColumn(column="a", value_sql="b + 1", tool="compute")],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn)
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    rows = db.open_table("t").to_arrow().to_pydict()
+    assert rows["a"] == [11, 21]
+
+
+def test_revert_after_schema_ops(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    table = _make_gene_table(db_uri)
+    version_before = table.version
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            AddColumn(column="organism", value="human", tool="t"),
+            DropColumn(column="ensembl_id", tool="t"),
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn)
+        revert_version = applicator.get_revert_version(result.transaction_id)
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    assert revert_version == version_before
+
+    # Version-based revert restores the pre-transaction schema.
+    db = lancedb.connect(db_uri)
+    table = db.open_table("gene_expression")
+    table.checkout(version_before)
+    table.restore()
+    names = table.schema.names
+    assert "organism" not in names
+    assert "ensembl_id" in names

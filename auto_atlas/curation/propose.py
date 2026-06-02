@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from auto_atlas.curation.types import ColumnReplacement
+from auto_atlas.curation.types import ReplaceValue
 from auto_atlas.types import Resolution, ResolutionReport
 
 
@@ -17,6 +17,9 @@ def _values_equal(a: Any, b: Any) -> bool:
     return str(a) == str(b)
 
 
+# TODO: This is too rigid, especially if the remapping is for something
+# that isn't in an ontology or DB. Should support lambda functions for remapping
+# values too. Lambda can be converted to a string and logged as `tool`.
 def propose_column_replacements(
     current_values: list[Any],
     report: ResolutionReport,
@@ -25,7 +28,7 @@ def propose_column_replacements(
     tool: str,
     reason: str,
     resolved_value_fn: Callable[[Resolution], Any | None],
-) -> list[ColumnReplacement]:
+) -> list[ReplaceValue]:
     """Derive deduplicated find-and-replace operations from a resolution report.
 
     Zips ``current_values`` with ``report.results``. For each row, uses
@@ -45,7 +48,7 @@ def propose_column_replacements(
             f"report.results length ({len(report.results)})"
         )
 
-    best: dict[tuple[str, Any, Any], ColumnReplacement] = {}
+    best: dict[tuple[str, Any, Any], ReplaceValue] = {}
 
     for current, resolution in zip(current_values, report.results, strict=True):
         new_value = resolved_value_fn(resolution)
@@ -55,7 +58,7 @@ def propose_column_replacements(
             continue
 
         key = (column, current, new_value)
-        candidate = ColumnReplacement(
+        candidate = ReplaceValue(
             column=column,
             old_value=current,
             new_value=new_value,
