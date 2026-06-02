@@ -5,6 +5,16 @@ metadata to canonical identifiers and CELLxGENE-compatible ontology term IDs.
 No coupling to ingestion_utils.py or LanceDB.
 """
 
+from auto_atlas.curation import (
+    ApplyResult,
+    ColumnReplacement,
+    CurationApplicator,
+    CurationAuditStore,
+    CurationTransaction,
+    TransactionStatus,
+    default_audit_db_path,
+    propose_column_replacements,
+)
 from auto_atlas.genes import (
     detect_organism_from_ensembl_ids,
     is_placeholder_symbol,
@@ -74,6 +84,15 @@ from auto_atlas.types import (
 )
 
 __all__ = [
+    # Curation
+    "ApplyResult",
+    "ColumnReplacement",
+    "CurationApplicator",
+    "CurationAuditStore",
+    "CurationTransaction",
+    "TransactionStatus",
+    "default_audit_db_path",
+    "propose_column_replacements",
     # Types
     "Resolution",
     "CellLineResolution",

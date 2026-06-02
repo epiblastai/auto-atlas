@@ -1,0 +1,331 @@
+"""Tests for the curation audit system."""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+import lancedb
+import pyarrow as pa
+import pytest
+
+from auto_atlas.curation import (
+    ColumnReplacement,
+    CurationApplicator,
+    CurationAuditStore,
+    CurationTransaction,
+    TransactionStatus,
+    default_audit_db_path,
+    propose_column_replacements,
+)
+from auto_atlas.curation.sql import build_where_clause
+from auto_atlas.types import GeneResolution, ResolutionReport
+
+
+@pytest.fixture
+def atlas_dirs():
+    with tempfile.TemporaryDirectory() as tmp:
+        lance_dir = Path(tmp) / "lance_db"
+        lance_dir.mkdir()
+        audit_path = default_audit_db_path(str(lance_dir))
+        yield str(lance_dir), audit_path
+
+
+def _make_gene_table(db_uri: str) -> lancedb.table.Table:
+    db = lancedb.connect(db_uri)
+    data = pa.table(
+        {
+            "uid": ["aaa", "bbb", "ccc"],
+            "gene_symbol": ["BRCA2", "BRCA2", "TP53"],
+            "ensembl_id": ["ENS1", "ENS2", "ENS3"],
+        }
+    )
+    return db.create_table("gene_expression", data=data, mode="overwrite")
+
+
+def test_default_audit_db_path_sibling_to_lance_db():
+    path = default_audit_db_path("/data/atlas/lance_db")
+    assert path == "/data/atlas/curation_audit.db"
+
+
+def test_default_audit_db_path_preserves_s3_uri():
+    path = default_audit_db_path("s3://bucket/data/atlas/lance_db")
+    assert path == "s3://bucket/data/atlas/curation_audit.db"
+
+
+def test_propose_dedupes_shared_old_value():
+    report = ResolutionReport(
+        total=3,
+        resolved=3,
+        unresolved=0,
+        ambiguous=0,
+        results=[
+            GeneResolution(
+                input_value="BRCA2",
+                resolved_value="BRCA2",
+                confidence=1.0,
+                source="lancedb",
+                symbol="BRCA2",
+                ensembl_gene_id="ENS0001",
+            ),
+            GeneResolution(
+                input_value="BRCA2",
+                resolved_value="BRCA2",
+                confidence=0.9,
+                source="lancedb",
+                symbol="BRCA2",
+                ensembl_gene_id="ENS0002",
+            ),
+            GeneResolution(
+                input_value="TP53",
+                resolved_value="TP53",
+                confidence=1.0,
+                source="lancedb",
+                symbol="TP53",
+                ensembl_gene_id="ENS0003",
+            ),
+        ],
+    )
+    replacements = propose_column_replacements(
+        ["brca2", "brca2", "TP53"],
+        report,
+        column="gene_symbol",
+        tool="resolve_genes",
+        reason="test",
+        resolved_value_fn=lambda r: r.symbol,
+    )
+    assert len(replacements) == 1
+    assert replacements[0].old_value == "brca2"
+    assert replacements[0].new_value == "BRCA2"
+    assert replacements[0].confidence == 1.0
+
+
+def test_apply_round_trip(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            ColumnReplacement(
+                column="gene_symbol",
+                old_value="BRCA2",
+                new_value="BRCA2_CANON",
+                tool="resolve_genes",
+                reason="standardize symbols",
+                confidence=1.0,
+                source="lancedb",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn, allowed_columns={"gene_symbol"})
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    assert result.applied_changes[0].rows_updated == 2
+    assert result.applied_changes[0].lance_version is not None
+    assert result.applied_changes[0].lance_version > result.lance_version_before
+
+    db = lancedb.connect(db_uri)
+    updated = db.open_table("gene_expression").to_arrow().to_pydict()
+    assert updated["gene_symbol"].count("BRCA2_CANON") == 2
+    assert updated["gene_symbol"].count("TP53") == 1
+
+    store = CurationAuditStore(audit_path)
+    try:
+        record = store.get_transaction(result.transaction_id)
+        assert record is not None
+        assert record["transaction"]["status"] == "applied"
+        assert record["changes"][0]["rows_updated"] == 2
+        assert record["changes"][0]["lance_version"] == result.applied_changes[0].lance_version
+    finally:
+        store.close()
+
+
+def test_apply_null_old_value(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    db = lancedb.connect(db_uri)
+    data = pa.table({"gene_symbol": ["A", None, "B"]})
+    db.create_table("features", data=data, mode="overwrite")
+
+    txn = CurationTransaction(
+        table_name="features",
+        changes=[
+            ColumnReplacement(
+                column="gene_symbol",
+                old_value=None,
+                new_value="UNKNOWN",
+                tool="resolve_genes",
+                reason="fill nulls",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn)
+    finally:
+        applicator.close()
+
+    assert result.applied_changes[0].rows_updated == 1
+    table = db.open_table("features")
+    symbols = table.to_arrow()["gene_symbol"].to_pylist()
+    assert symbols.count("UNKNOWN") == 1
+    assert symbols.count("A") == 1
+    assert symbols.count("B") == 1
+
+
+def test_build_where_clause_null():
+    field_type = pa.string()
+    assert build_where_clause("gene_symbol", None, field_type) == "gene_symbol IS NULL"
+
+
+def test_dry_run_does_not_mutate_lance(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+    db = lancedb.connect(db_uri)
+    version_before = db.open_table("gene_expression").version
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            ColumnReplacement(
+                column="gene_symbol",
+                old_value="TP53",
+                new_value="TP53_CANON",
+                tool="resolve_genes",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn, dry_run=True)
+    finally:
+        applicator.close()
+
+    assert result.dry_run is True
+    assert db.open_table("gene_expression").version == version_before
+    symbols = db.open_table("gene_expression").to_arrow()["gene_symbol"].to_pylist()
+    assert symbols.count("BRCA2") == 2
+    assert symbols.count("TP53") == 1
+
+    store = CurationAuditStore(audit_path)
+    try:
+        record = store.get_transaction(result.transaction_id)
+        assert record["transaction"]["status"] == "pending"
+    finally:
+        store.close()
+
+
+def test_parallel_columns_on_same_table(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    db = lancedb.connect(db_uri)
+    data = pa.table(
+        {
+            "gene_symbol": ["OLD_G", "OLD_G"],
+            "uniprot_id": ["OLD_P", "OLD_P"],
+        }
+    )
+    db.create_table("features", data=data, mode="overwrite")
+
+    gene_txn = CurationTransaction(
+        table_name="features",
+        changes=[
+            ColumnReplacement(
+                column="gene_symbol",
+                old_value="OLD_G",
+                new_value="NEW_G",
+                tool="resolve_genes",
+            )
+        ],
+    )
+    protein_txn = CurationTransaction(
+        table_name="features",
+        changes=[
+            ColumnReplacement(
+                column="uniprot_id",
+                old_value="OLD_P",
+                new_value="NEW_P",
+                tool="resolve_proteins",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        gene_result = applicator.apply(gene_txn, allowed_columns={"gene_symbol"})
+        protein_result = applicator.apply(protein_txn, allowed_columns={"uniprot_id"})
+    finally:
+        applicator.close()
+
+    assert gene_result.status == TransactionStatus.APPLIED
+    assert protein_result.status == TransactionStatus.APPLIED
+
+    table = db.open_table("features")
+    rows = table.to_arrow().to_pydict()
+    assert rows["gene_symbol"] == ["NEW_G", "NEW_G"]
+    assert rows["uniprot_id"] == ["NEW_P", "NEW_P"]
+
+    store = CurationAuditStore(audit_path)
+    try:
+        txns = store.list_transactions(table_name="features")
+        assert len(txns) == 2
+    finally:
+        store.close()
+
+
+def test_allowed_columns_rejects_foreign_column(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            ColumnReplacement(
+                column="ensembl_id",
+                old_value="ENS1",
+                new_value="ENSX",
+                tool="resolve_genes",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        with pytest.raises(ValueError, match="not in allowed_columns"):
+            applicator.apply(txn, allowed_columns={"gene_symbol"})
+    finally:
+        applicator.close()
+
+
+def test_get_revert_version(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    table = _make_gene_table(db_uri)
+    version_before = table.version
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            ColumnReplacement(
+                column="gene_symbol",
+                old_value="TP53",
+                new_value="TP53_CANON",
+                tool="resolve_genes",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn)
+        revert_version = applicator.get_revert_version(result.transaction_id)
+    finally:
+        applicator.close()
+
+    assert revert_version == version_before
+    assert result.lance_version_before == version_before
