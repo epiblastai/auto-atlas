@@ -5,6 +5,7 @@ description = "Automatic atlas design and curation utilities"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "anndata",
     "lancedb",
     "numpy",
     "polars",
@@ -32,6 +33,10 @@ dev = [
     "pre-commit",
 ]
 
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -55,3 +60,6 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["auto_atlas*"]

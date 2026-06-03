@@ -177,9 +177,9 @@ def _parse_characteristics(values: list[str]) -> dict[str, str]:
     for v in values:
         if ": " in v:
             k, _, val = v.partition(": ")
-            chars[k.strip().lower()] = val.strip()
+            chars[k.strip()] = val.strip()
         elif v.strip():
-            chars[v.strip().lower()] = ""
+            chars[v.strip()] = v.strip()
     return chars
 
 
@@ -317,6 +317,46 @@ def fetch_geo_metadata(
             f"Unrecognized GEO accession prefix: {accession!r}. "
             "Expected GSE (series) or GSM (sample)."
         )
+
+
+def geo_metadata_to_dict(metadata: GeoSeriesMetadata | GeoSampleMetadata) -> dict:
+    """Return the legacy GEO metadata JSON shape used by skill scripts."""
+    if isinstance(metadata, GeoSeriesMetadata):
+        return {
+            "accession": metadata.accession,
+            "title": metadata.title,
+            "summary": metadata.summary,
+            "organism": metadata.organism,
+            "n_samples": metadata.n_samples,
+            "platform": ";".join(metadata.platform_ids),
+            "ftp_link": metadata.ftp_link,
+            "pmids": metadata.pmids,
+            "doi": metadata.doi,
+        }
+
+    if isinstance(metadata, GeoSampleMetadata):
+        return {
+            "accession": metadata.accession,
+            "title": metadata.title,
+            "source": metadata.source,
+            "organism": metadata.organism,
+            "characteristics": metadata.characteristics,
+            "molecule": metadata.molecule,
+            "platform": metadata.platform,
+            "description": metadata.description,
+            "treatment_protocol": metadata.treatment_protocol,
+            "growth_protocol": metadata.growth_protocol,
+            "extract_protocol": metadata.extract_protocol,
+            "data_processing": metadata.data_processing,
+            "gse": metadata.series_ids,
+        }
+
+    raise TypeError(f"Unsupported GEO metadata type: {type(metadata).__name__}")
+
+
+def fetch_geo_metadata_dict(accession: str) -> dict:
+    """Fetch GEO metadata and return the legacy JSON-compatible dict shape."""
+    return geo_metadata_to_dict(fetch_geo_metadata(accession))
 
 
 def fetch_geo_series(accession: str) -> GeoSeriesMetadata:
@@ -941,7 +981,8 @@ def fetch_publication_metadata(pmid: str | int) -> dict:
     """Fetch publication metadata as a dict (backward-compatible).
 
     Returns a dict with keys: pmid, doi, title, journal, publication_date,
-    full_text. The full_text field concatenates all sections with headers.
+    authors, full_text, text_source. The full_text field concatenates all
+    sections with headers.
     """
     pub = fetch_publication(str(pmid))
     text_data = fetch_publication_text(pub.pmid, pub.pmc_id)
@@ -961,5 +1002,7 @@ def fetch_publication_metadata(pmid: str | int) -> dict:
         "title": pub.title,
         "journal": pub.journal,
         "publication_date": (pub.publication_date.isoformat() if pub.publication_date else None),
+        "authors": pub.authors,
         "full_text": full_text,
+        "text_source": text_data.source,
     }
