@@ -118,14 +118,16 @@ class Collection:
         self._coalesced_files: set[str] = set()
 
     @classmethod
-    def from_json(cls, data: str) -> "Collection":
-        """Rehydrate a Collection from the JSON produced by ``dumps``.
+    def from_json(cls, path: str) -> "Collection":
+        """Rehydrate a Collection from a collection JSON file.
 
-        Because ``dumps`` only emits a fully-coalesced collection, the
+        Because collection JSON files only contain a fully-coalesced collection, the
         reconstructed datasets and shared files are marked coalesced so the
-        manifest round-trips (``Collection.from_json(c.dumps()).dumps()`` equals
+        manifest round-trips (``Collection.from_json(path).dumps()`` equals
         ``c.dumps()``) and re-coalescing is a no-op.
         """
+        with open(path) as f:
+            data = f.read()
         payload = json.loads(data)
         collection = cls(payload["root_dir"])
 
@@ -250,3 +252,8 @@ class Collection:
             },
         }
         return json.dumps(payload, indent=2)
+
+    def to_json(self) -> None:
+        data = self.dumps()
+        with open(os.path.join(self.root_dir, "collection.json"), "w") as f:
+            f.write(data)
