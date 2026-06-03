@@ -20,6 +20,7 @@ def _values_equal(a: Any, b: Any) -> bool:
 # TODO: This is too rigid, especially if the remapping is for something
 # that isn't in an ontology or DB. Should support lambda functions for remapping
 # values too. Lambda can be converted to a string and logged as `tool`.
+# Including lambdas that operate over a column of a table and transform or derive a value.
 def propose_column_replacements(
     current_values: list[Any],
     report: ResolutionReport,

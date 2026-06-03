@@ -98,7 +98,7 @@ In some cases the GEO record does not have a clear publication reference. Do not
 
 If you have questions about the data in later steps, the publication is a good place to find answers before asking the user.
 
-### 5. Download and organize files by experiment
+### 5. Download and organize files into a Collection
 
 Download the necessary files from GEO (be sure to use long enough timeouts for large files):
 
@@ -108,43 +108,96 @@ python scripts/download_geo_file.py <accession> <filename> [dest_dir]
 
 Default destination: `/tmp/geo_agent/<accession>/`. Some GEO datasets have multiple files in a single tar archive -- extract it. If there are multiple versions of the same dataset, possibly indicated by terms like "filtered", "processed", or "validated", prefer these analysis-ready artifacts to the raw version. Ask the user if unsure.
 
-Next group the files into subdirectories by experiment. Simply use `mv` to move the files into the correct subdirectory, no `cp` or `ln -s` for symlinks. Depending on the file formats and whether the assay is unimodal or multimodal, we may have multiple files bundled together in the same subdirectory. Do not create separate subdirectories for modalities captured in the same experiment.
+Organize files with `auto_atlas.collection`. Create one `Dataset` per experiment, add each file with the appropriate `FileTypeTag` (and feature space for obs/var/data files), add the datasets to a `Collection`, then `coalesce()` to lay out the directory structure on disk and `dumps()` the manifest to the root directory.
 
-### 6. Create raw obs and var dataframes
+- A `Dataset` is one experiment. Multimodal modalities from the same experiment go in the SAME dataset, distinguished by `feature_space` — do not split them.
+- Tag files with `FileTypeTag`: `DATA` for matrices (h5ad, mtx, etc.), `OBS`/`VAR` for metadata tables, `LIBRARY` for reagent/guide/donor libraries, `OTHER` for free-form informational files (READMEs, protocols).
+- **For `.h5ad` data files, run `extract_h5ad_obs_var` (from `auto_atlas.util`) BEFORE tagging and adding files.** It writes `_obs.csv` and `_var.csv` next to the h5ad. Add the h5ad as `DATA` and the two extracted CSVs as `OBS`/`VAR` (same feature space), so the obs/var tables get coalesced and recorded in the manifest alongside the matrix.
+<!---Feature space name mostly doesn't matter during curation, so long as it properly keeps obs and var from getting confused with each other. These do not need to be aligned to the homeobox feature space registry.-->
+- Set `feature_space` (e.g. `gene_expression`, `protein_abundance`, `chromatin_accessibility`) on obs/var/data files; omit it for shared libraries and informational files.
+- Files shared across datasets (e.g. one guide library used by every experiment) are added to the `Collection` via `add_file`, not to an individual `Dataset`.
 
-Each of the subdirectories should have dataframes that correspond to obs-level and, typically, var-level metadata as well. These dataframe might be csv or tsv or inside of an h5ad file. In either case, write new csv files with suffix `_{feature_space}_raw_obs.csv` and `_{feature_space}_raw_var.csv`, where the feature space might be "gene_expression", "chromatin_accessibility, "protein_abundance", etc. There shouldn't be more than 1 obs or var csv per modality.
+<!---This doesn't provide an example of how to handle the case of an "anndata-dataframe" where the metadata is in the same csv as features, which are named by column. In that cases we need to reason about the split. One place this comes up is CellProfiler features.-->
+<!---We shouldn't use temp directories for this, because we don't want to lose work on shutdown.-->
+```python
+from auto_atlas.collection import Collection, Dataset, FileTypeTag
+from auto_atlas.util import extract_h5ad_obs_var
 
-You should not remove any columns from the original dataframes, but you may add additional fields that were discovered from the GEO metadata or the downloaded publication text. For example, the raw dataframes might not include global metadata like organism, cell type, or donor information. If that information is in the metadata or publication, create new columns relevant to the schema. Do not worry about standardizing the terms that you find because that is delegated to the resolver subagents.
+collection = Collection(root_dir="/tmp/geo_agent/<accession>")
 
-For any obs fields that need only pass-through or type coercion (e.g., batch_id, replicate, well_position, days_in_vitro), write them to `{fs}_fragment_preparer_obs.csv` using the schema field names directly. For multimodal experiments, also run barcode reconciliation:
+hepg2 = Dataset("HepG2")
 
+# h5ad: extract obs/var to CSVs BEFORE tagging, then add all three.
+gex_h5ad = ".../GSE..._HepG2.h5ad"
+gex_obs, gex_var = extract_h5ad_obs_var(gex_h5ad)  # -> ..._obs.csv, ..._var.csv
+hepg2.add_file(gex_h5ad, FileTypeTag.DATA, "gene_expression")
+hepg2.add_file(gex_obs, FileTypeTag.OBS, "gene_expression")
+hepg2.add_file(gex_var, FileTypeTag.VAR, "gene_expression")
+
+# shared, collection-level library referenced by multiple datasets
+collection.add_file(".../guide_library.csv", FileTypeTag.LIBRARY)
+
+collection.coalesce(copy=False)  # moves dataset files under root/<name>/, OTHER files under root/other_files/
+with open("/tmp/geo_agent/<accession>/collection.json", "w") as f:
+    f.write(collection.dumps())
 ```
-python scripts/reconcile_barcodes.py <experiment_dir>
+
+After `coalesce()`, dataset files live in `root/<dataset_name>/`, shared files in `root/`, and `OTHER` files in `root/other_files/`. The `collection.json` manifest records every file with its tag and feature space and is the source of truth for the steps that follow.
+
+### 6a. Stage obs and var into per-dataset Lance tables
+
+Each dataset's obs- and var-level metadata is loaded into a Lance database at `<dataset_dir>/lance_db/`.
+
+The OBS and VAR tables were already extracted and tagged in step 5 (h5ad via `extract_h5ad_obs_var`; mtx bundles and standalone tables tagged directly). Use `Dataset.files_for(tag=..., feature_space=...)` (or `collection.json`) to find the OBS and VAR file for each feature space — there should be at most one of each per feature space, and their paths now point at the coalesced locations.
+
+Load each table into the dataset's `lance_db/` with ALL of its original columns — do not drop, rename, or standardize anything. 
+
+- Name each table by the CamelCase schema class it will populate: the obs schema class (from step 2) for obs tables, and the feature registry class (e.g. `GenomicFeatureSchema`, `ProteinSchema`) for var tables.
+- Keep the cell index / var index as an explicit column so rows can be linked downstream.
+- When a dataset has multiple feature spaces sharing the same obs schema class, qualify the obs table name with the feature space (e.g. `CellIndex_gene_expression`) to avoid collisions.
+
+<!---This should either be a script or it could be combined with the previous step. If we have a feature_space to registry_schema_name mapping then naming is automatic from tags. Obs naming can be handled similarly. 99% of the time there's one schema for obs, so wouldn't necessarily need a mapping.-->
+```python
+import lancedb
+import pandas as pd
+
+db = lancedb.connect("<dataset_dir>/lance_db")
+
+(obs_csv,) = hepg2.files_for(tag=FileTypeTag.OBS, feature_space="gene_expression")
+obs_df = pd.read_csv(obs_csv, index_col=0).reset_index(names="obs_index")
+db.create_table("CellIndex_gene_expression", data=obs_df, mode="overwrite")
+
+(var_csv,) = hepg2.files_for(tag=FileTypeTag.VAR, feature_space="gene_expression")
+var_df = pd.read_csv(var_csv, index_col=0).reset_index(names="var_index")
+db.create_table("GenomicFeatureSchema", data=var_df, mode="overwrite")
 ```
 
-### 7. Create global feature and foreign key tables
+#### 6b. Add fields from metadata
 
-Before launching resolvers, create accession-level `_raw.csv` files that consolidate data across all experiments for entities that need global resolution.
+You MAY add columns for metadata found in the GEO metadata json or the publication that is not already present (e.g. organism, cell line, donor), using schema field names. Standardizing the values is delegated to the resolver subagents.
 
-**For each feature registry schema** (e.g., `GenomicFeatureSchema`):
+### 7. Create collection-level informational tables
 
-1. Concatenate per-experiment `{fs}_raw_var.csv` files
-2. Add columns: `var_index` (the var index value), `experiment_subdir`, `source_var_column`
-3. Deduplicate on `var_index`
-4. Write `{SchemaClassName}_raw.csv` at accession level (e.g., `GenomicFeatureSchema_raw.csv`)
+Foreign key tables (genetic perturbations, small molecules, donors, etc.) describe entities shared across the whole collection — they derive from the collection-level `LIBRARY` files and from columns in the per-dataset obs tables. Stage them globally in a single Lance database at the collection root, `<root_dir>/lance_db/`, one table per foreign key schema, named by the CamelCase schema class (e.g. `GeneticPerturbationSchema`, `SmallMoleculeSchema`).
 
-**For each foreign key schema** (e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`):
+For each foreign key schema:
 
-1. Extract relevant columns from obs across all experiments
-2. Add a key column (e.g., `reagent_id`) for mapping back
-3. Deduplicate on key
-4. Write `{SchemaClassName}_raw.csv` at accession level
+1. Gather the relevant columns from the shared `LIBRARY` file(s) and/or from obs across all datasets
+2. Add a key column (e.g. `reagent_id`) for mapping back to obs
+3. Deduplicate on the key
+4. Enrich with supplementary information from the GEO metadata and publication — the preparer gathers everything in unstandardized form so the resolver never hunts for supplementary files
+5. Write the table into the collection-level `lance_db/`
 
-Column misalignment across datasets is OK — union of columns with NaN fills.
+Column misalignment across sources is OK — union of columns with NaN fills.
 
-**Enrich `_raw.csv` with supplementary data.** Before handing off to resolvers, add supplementary info (e.g., publication metadata, global experimental variables, etc.) into `_raw.csv`. **`_raw.csv` contains all available information in unstandardized form.** The preparer never calls resolution functions; the resolver never hunts for supplementary files.
+```python
+import lancedb
 
-**Naming convention:** Use the full schema class name, examples might be: `GenomicFeatureSchema`, `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `BiologicPerturbationSchema`, or `ProteinSchema`.
+db = lancedb.connect("<root_dir>/lance_db")
+db.create_table("GeneticPerturbationSchema", data=fk_df, mode="overwrite")
+```
+
+Feature (var) registries are NOT created here — they are staged per dataset in step 6, since deterministic UIDs let the atlas registry deduplicate features across datasets on ingestion.
 
 ### 8. Delegate resolution to resolver subagents
 

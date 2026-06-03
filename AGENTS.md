@@ -1,0 +1,1 @@
+- Do not use Path or pathlib because it does not work correctly for s3 urls.
