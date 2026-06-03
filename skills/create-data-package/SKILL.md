@@ -68,7 +68,7 @@ When completed with this workflow, be sure to tell the user if record metadata o
 
 ### 5. Create collection, coalesce, and save
 
-Organize files with `auto_atlas.collection`. Create one `Dataset` per experiment, add each file with the appropriate `FileTypeTag` (and feature space for obs/var/data files), add the datasets to a `Collection`, then `coalesce()` to lay out the directory structure on disk and `dumps()` the manifest to the root directory.
+Organize files with `auto_atlas.collection`. Create one `Dataset` per experiment, add each file with the appropriate `FileTypeTag` (and feature space for obs/var/data files), add the datasets to a `Collection`, then `coalesce()` to lay out the directory structure on disk and `to_json()` to write the manifest to the root directory.
 
 - A `Dataset` is one experiment. Multimodal modalities from the same experiment go in the SAME dataset, distinguished by `feature_space` — do not split them.
 - Tag files with `FileTypeTag`: `DATA` for matrices (h5ad, mtx, etc.), `OBS`/`VAR` for metadata tables, `LIBRARY` for reagent/guide/donor libraries, `OTHER` for free-form informational files (READMEs, protocols).

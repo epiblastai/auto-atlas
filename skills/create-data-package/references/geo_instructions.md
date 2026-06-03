@@ -8,7 +8,7 @@ You have access to scripts to help with the navigation and download for files an
 |--------|-------|---------|
 | `scripts/list_geo_files.py` | `python scripts/list_geo_files.py GSE123456` | List supplementary files for any GEO accession (GSE or GSM) |
 | `scripts/download_geo_file.py` | `python scripts/download_geo_file.py GSE123456 file.h5ad [dest_dir]` | Download a supplementary file from GEO via FTP |
-| `scripts/write_metadata_json.py` | `python scripts/write_metadata_json.py <collection_dir> <accession>` | Fetch and write GEO metadata as a metadata.json file in collection_dir |
+| `scripts/write_metadata_json.py` | `python scripts/write_metadata_json.py <collection_dir> <accession>` | Fetch and write GEO metadata to `<collection_dir>/<accession>_metadata.json` |
 
 ## Additional instructions
 
