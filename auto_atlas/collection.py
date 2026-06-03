@@ -117,6 +117,31 @@ class Collection:
         self._shared_tagged_files: dict[str, TaggedFile] = {}
         self._coalesced_files: set[str] = set()
 
+    @classmethod
+    def from_json(cls, data: str) -> "Collection":
+        """Rehydrate a Collection from the JSON produced by ``dumps``.
+
+        Because ``dumps`` only emits a fully-coalesced collection, the
+        reconstructed datasets and shared files are marked coalesced so the
+        manifest round-trips (``Collection.from_json(c.dumps()).dumps()`` equals
+        ``c.dumps()``) and re-coalescing is a no-op.
+        """
+        payload = json.loads(data)
+        collection = cls(payload["root_dir"])
+
+        for f in payload.get("shared_files", []):
+            collection.add_file(f["path"], FileTypeTag(f["tag"]), f["feature_space"])
+            collection._coalesced_files.add(f["path"])
+
+        for name, dataset_payload in payload.get("datasets", {}).items():
+            dataset = Dataset(name)
+            for f in dataset_payload["files"]:
+                dataset.add_file(f["path"], FileTypeTag(f["tag"]), f["feature_space"])
+            collection.add_dataset(dataset)
+            collection._coalesced_datasets.add(name)
+
+        return collection
+
     @property
     def datasets(self) -> list[str]:
         return list(self._datasets.keys())
