@@ -5,6 +5,7 @@ description = "Automatic atlas design and curation utilities"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "anndata",
     "lancedb",
     "numpy",
     "polars",

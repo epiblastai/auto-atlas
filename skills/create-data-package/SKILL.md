@@ -108,7 +108,7 @@ Depending on the public source of the data, you may use the following scripts as
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
-| `scripts/write_publication_json.py` | `python scripts/write_publication_json.py --pmid 40259084` | Download a publication archive from pubmed, parse it, and save it as json |
+| `scripts/write_publication_json.py` | `python scripts/write_publication_json.py <data_dir> --pmid 40259084` | Download a publication archive from pubmed, parse it, and save it as json |
 
 ## References
 

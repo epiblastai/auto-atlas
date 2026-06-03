@@ -14,7 +14,7 @@ You have access to scripts to help with the navigation and download for files an
 
 ### List data files for the provided GEO accession
 
-If the accession code is for a series or superseries (GSE prefix) series record, look a single large tar file, these are generally preferable over downloading files separately for each sample. However, if the series level has no files or only summary statistics, then you should check the sample-level for the real data. If there are many sample records its best to process them one at a time to avoid confusion. If very many, you should ask the user how they would like to proceed.
+If the accession code is for a series or superseries (GSE prefix) series record, look a single large file that might be aggregated data, these are generally preferable over downloading files separately for each sample. However, if the series level has no files or only summary statistics, then you should check the sample-level for the real data. If there are many sample records its best to process them one at a time to avoid confusion. If very many, you should ask the user how they would like to proceed.
 
 ### Download a file
 

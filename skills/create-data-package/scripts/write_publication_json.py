@@ -14,7 +14,7 @@ Usage:
 
 import argparse
 import json
-from pathlib import Path
+import os
 
 from auto_atlas import (
     fetch_geo_series,
@@ -34,13 +34,19 @@ def _resolve_pmids_from_gse(gse_accession: str) -> list[str]:
 def _extract_pmids_from_metadata(metadata: dict) -> list[str]:
     """Extract PMIDs from a metadata.json dict.
 
-    Looks through all entries for series_metadata.pmids first, then falls back
-    to resolving GSE accessions found in sample_metadata.gse.
+    Handles the flat dict written by write_metadata_json.py for GEO accessions,
+    and the older nested shape with series_metadata/sample_metadata entries.
     """
     pmids: list[str] = []
     gse_accessions: list[str] = []
 
-    for entry in metadata.values():
+    if metadata.get("pmids"):
+        pmids.extend(metadata["pmids"])
+
+    entries = metadata.values()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
         series = entry.get("series_metadata")
         if series and series.get("pmids"):
             pmids.extend(series["pmids"])
@@ -71,13 +77,17 @@ def _extract_pmids_from_metadata(metadata: dict) -> list[str]:
     return unique
 
 
-def _find_metadata_path(data_dir: Path) -> Path | None:
-    accession_metadata = sorted(data_dir.glob("*_metadata.json"))
+def _find_metadata_path(data_dir: str) -> str | None:
+    accession_metadata = sorted(
+        os.path.join(data_dir, name)
+        for name in os.listdir(data_dir)
+        if name.endswith("_metadata.json")
+    )
     if accession_metadata:
         return accession_metadata[0]
 
-    metadata_path = data_dir / "metadata.json"
-    if metadata_path.exists():
+    metadata_path = os.path.join(data_dir, "metadata.json")
+    if os.path.exists(metadata_path):
         return metadata_path
 
     return None
@@ -85,9 +95,8 @@ def _find_metadata_path(data_dir: Path) -> Path | None:
 
 def write_publication_json(
     data_dir: str, pmid: str | None = None, title: str | None = None
-) -> Path:
-    data_dir = Path(data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
+) -> str:
+    os.makedirs(data_dir, exist_ok=True)
 
     if pmid:
         resolved_pmid = pmid
@@ -101,9 +110,12 @@ def write_publication_json(
         assert metadata_path is not None, (
             f"No metadata JSON found in {data_dir}. Use --pmid or --title."
         )
-        metadata = json.loads(metadata_path.read_text())
+        with open(metadata_path) as f:
+            metadata = json.loads(f.read())
         pmids = _extract_pmids_from_metadata(metadata)
-        assert pmids, f"No PMIDs found in {metadata_path.name}. Use --pmid or --title."
+        assert pmids, (
+            f"No PMIDs found in {os.path.basename(metadata_path)}. Use --pmid or --title."
+        )
         resolved_pmid = pmids[0]
         if len(pmids) > 1:
             print(f"Multiple PMIDs found: {pmids}. Using first: {resolved_pmid}")
@@ -115,8 +127,9 @@ def write_publication_json(
     pub["authors"] = publication.authors
     pub["text_source"] = text_data.source
 
-    output_path = data_dir / "publication.json"
-    output_path.write_text(json.dumps(pub, indent=2))
+    output_path = os.path.join(data_dir, "publication.json")
+    with open(output_path, "w") as f:
+        f.write(json.dumps(pub, indent=2))
     print(f"Wrote {output_path}")
     return output_path
 
