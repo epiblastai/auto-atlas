@@ -981,7 +981,8 @@ def fetch_publication_metadata(pmid: str | int) -> dict:
     """Fetch publication metadata as a dict (backward-compatible).
 
     Returns a dict with keys: pmid, doi, title, journal, publication_date,
-    full_text. The full_text field concatenates all sections with headers.
+    authors, full_text, text_source. The full_text field concatenates all
+    sections with headers.
     """
     pub = fetch_publication(str(pmid))
     text_data = fetch_publication_text(pub.pmid, pub.pmc_id)
@@ -1001,5 +1002,7 @@ def fetch_publication_metadata(pmid: str | int) -> dict:
         "title": pub.title,
         "journal": pub.journal,
         "publication_date": (pub.publication_date.isoformat() if pub.publication_date else None),
+        "authors": pub.authors,
         "full_text": full_text,
+        "text_source": text_data.source,
     }

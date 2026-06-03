@@ -1,96 +1,17 @@
 """Fetch publication metadata from PubMed/PMC and write publication.json.
 
-Three modes of operation:
-
-1. From metadata JSON (default): reads <data_dir>/{accession}_metadata.json if
-   present, otherwise <data_dir>/metadata.json, and extracts PMIDs from
-   series_metadata.pmids (or resolves GSE from sample_metadata.gse).
-2. --pmid: fetch metadata for a specific PMID.
-3. --title: search PubMed by title to find the PMID, then fetch metadata.
+Provide either --pmid to fetch a specific PMID or --title to search PubMed by
+title first.
 
 Usage:
-    python scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]
+    python scripts/write_publication_json.py <data_dir> (--pmid PMID | --title TITLE)
 """
 
 import argparse
 import json
 import os
 
-from auto_atlas import (
-    fetch_geo_series,
-    fetch_publication,
-    fetch_publication_metadata,
-    fetch_publication_text,
-    search_pubmed_by_title,
-)
-
-
-def _resolve_pmids_from_gse(gse_accession: str) -> list[str]:
-    """Fetch PMIDs for a GSE accession via GEO series metadata."""
-    series = fetch_geo_series(gse_accession)
-    return series.pmids
-
-
-def _extract_pmids_from_metadata(metadata: dict) -> list[str]:
-    """Extract PMIDs from a metadata.json dict.
-
-    Handles the flat dict written by write_metadata_json.py for GEO accessions,
-    and the older nested shape with series_metadata/sample_metadata entries.
-    """
-    pmids: list[str] = []
-    gse_accessions: list[str] = []
-
-    if metadata.get("pmids"):
-        pmids.extend(metadata["pmids"])
-
-    entries = metadata.values()
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        series = entry.get("series_metadata")
-        if series and series.get("pmids"):
-            pmids.extend(series["pmids"])
-
-        sample = entry.get("sample_metadata")
-        if sample and sample.get("gse"):
-            gse_list = sample["gse"]
-            if isinstance(gse_list, str):
-                gse_list = [gse_list]
-            gse_accessions.extend(gse_list)
-
-    if not pmids and gse_accessions:
-        seen = set()
-        for gse in gse_accessions:
-            if gse not in seen:
-                seen.add(gse)
-                print(f"Resolving PMIDs for {gse}...")
-                pmids.extend(_resolve_pmids_from_gse(gse))
-
-    # Deduplicate while preserving order
-    seen_pmids: set[str] = set()
-    unique: list[str] = []
-    for pmid in pmids:
-        if pmid not in seen_pmids:
-            seen_pmids.add(pmid)
-            unique.append(pmid)
-
-    return unique
-
-
-def _find_metadata_path(data_dir: str) -> str | None:
-    accession_metadata = sorted(
-        os.path.join(data_dir, name)
-        for name in os.listdir(data_dir)
-        if name.endswith("_metadata.json")
-    )
-    if accession_metadata:
-        return accession_metadata[0]
-
-    metadata_path = os.path.join(data_dir, "metadata.json")
-    if os.path.exists(metadata_path):
-        return metadata_path
-
-    return None
+from auto_atlas import fetch_publication_metadata, search_pubmed_by_title
 
 
 def write_publication_json(
@@ -106,26 +27,10 @@ def write_publication_json(
         assert resolved_pmid, f"No PubMed result found for title: {title}"
         print(f"Found PMID: {resolved_pmid}")
     else:
-        metadata_path = _find_metadata_path(data_dir)
-        assert metadata_path is not None, (
-            f"No metadata JSON found in {data_dir}. Use --pmid or --title."
-        )
-        with open(metadata_path) as f:
-            metadata = json.loads(f.read())
-        pmids = _extract_pmids_from_metadata(metadata)
-        assert pmids, (
-            f"No PMIDs found in {os.path.basename(metadata_path)}. Use --pmid or --title."
-        )
-        resolved_pmid = pmids[0]
-        if len(pmids) > 1:
-            print(f"Multiple PMIDs found: {pmids}. Using first: {resolved_pmid}")
+        raise ValueError("Either pmid or title is required")
 
     print(f"Fetching publication metadata for PMID {resolved_pmid}...")
     pub = fetch_publication_metadata(resolved_pmid)
-    publication = fetch_publication(str(resolved_pmid))
-    text_data = fetch_publication_text(publication.pmid, publication.pmc_id)
-    pub["authors"] = publication.authors
-    pub["text_source"] = text_data.source
 
     output_path = os.path.join(data_dir, "publication.json")
     with open(output_path, "w") as f:
@@ -139,9 +44,9 @@ if __name__ == "__main__":
         description="Fetch publication metadata and write publication.json"
     )
     parser.add_argument("data_dir", help="Directory to write publication.json to")
-    parser.add_argument("--pmid", help="PubMed ID to fetch directly")
-    parser.add_argument("--title", help="Paper title to search PubMed for")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--pmid", help="PubMed ID to fetch directly")
+    source.add_argument("--title", help="Paper title to search PubMed for")
     args = parser.parse_args()
 
-    assert not (args.pmid and args.title), "Cannot specify both --pmid and --title"
     write_publication_json(args.data_dir, pmid=args.pmid, title=args.title)
