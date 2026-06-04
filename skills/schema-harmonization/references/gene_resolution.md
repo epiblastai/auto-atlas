@@ -44,7 +44,7 @@ The resolution-pass script always resolves and replaces **in the same `--column`
 # After the rename transaction is applied
 python skills/schema-harmonization/scripts/apply_resolution_pass.py \
   <path/to/lance_db> \
-  --table GeneticFeaturenSchema \
+  --table GeneticFeatureSchema \
   --tool resolve_genes \
   --column ensembl_id \
   --resolution-field-name ensembl_gene_id \
@@ -55,7 +55,7 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
 ```python
 # Null Ensembl rows: copy symbol into ensembl_id for a second resolve pass
 txn = CurationTransaction(
-    table_name="GeneticFeaturenSchema",
+    table_name="GeneticFeatureSchema",
     changes=[
         SetColumn(
             column="ensembl_id",

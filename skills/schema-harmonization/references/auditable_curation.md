@@ -29,7 +29,7 @@ lance_path = "<path/to/lance_db>"
 audit_path = default_audit_db_path(lance_path)
 
 txn = CurationTransaction(
-    table_name="GeneticFeaturenSchema",
+    table_name="GeneticFeatureSchema",
     changes=[...],  # list[CurationOp]
     metadata={"organism": "human"},  # optional caller context
 )

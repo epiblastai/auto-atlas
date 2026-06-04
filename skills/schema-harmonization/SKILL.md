@@ -9,7 +9,7 @@ Harmonize the raw Lance tables in a data package so they conform to a target hom
 
 ## Input
 
-- A **LanceDB** location and table name. Collection-level foreign keys live in `<collection_root>/lance_db/`; per-dataset obs/var live in `<dataset_dir>/lance_db/`. Table names match schema class names (e.g. `GeneticFeaturenSchema`, `CellIndex`), modulo feature-space suffixes.
+- A **LanceDB** location and table name. Collection-level foreign keys live in `<collection_root>/lance_db/`; per-dataset obs/var live in `<dataset_dir>/lance_db/`. Table names match schema class names (e.g. `GeneticFeatureSchema`, `CellIndex`), modulo feature-space suffixes.
 - A **target homeobox schema file**. The table name must correspond to one of its schema classes.
 
 ## The audit model (read before mutating anything)
@@ -48,14 +48,17 @@ Resolution-pass script (one resolver, one column; `--list-tools` for names like 
 ```bash
 python skills/schema-harmonization/scripts/apply_resolution_pass.py \
   <path/to/lance_db> \
-  --table GeneticFeaturenSchema \
+  --table GeneticFeatureSchema \
   --tool resolve_genes \
   --column target_gene \
   --resolution-field-name symbol \
   --reason "standardize gene symbols" \
   --organism human \
+  --input-type symbol \
   --dry-run
 ```
+
+Pass `--input-type` (resolver-specific, e.g. `symbol`/`ensembl_id` for `resolve_genes`) when you already know what a column holds; it is more precise than the default `auto` and avoids mis-inference. Resolver kwargs like `--organism` and `--input-type` are forwarded to the tool.
 
 See **references/auditable_curation.md** for the applicator API (imports, `ApplyResult`, `allowed_columns` semantics, `propose_column_replacements`) and the general constraints of the resolution script.
 
