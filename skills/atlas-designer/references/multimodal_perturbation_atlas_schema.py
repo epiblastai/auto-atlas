@@ -491,10 +491,7 @@ class CellIndex(HoxBaseSchema):
         feature_registry_schema=ImageFeatureSchema,
     )
 
-    # Image tiles don't have a schema because they aren't features!
-    # TODO: For image data we might want to define a concept like "axis annotations"
-    # that are alternatives to the feature registry. Here for example, the axis annotations
-    # would be channel names probably.
+    # Image tiles don't have a feature registry because they aren't features!
     image_tiles: DenseZarrPointer | None = PointerField.declare(feature_space="image_tiles")
 
     # Auto-filled fields
@@ -508,6 +505,7 @@ class CellIndex(HoxBaseSchema):
     # sync automatically by :meth:`generate_has_pointer_flags` (instance
     # writes) and :meth:`compute_auto_fields` (bulk obs DataFrames), mirroring
     # how ``perturbation_search_string`` is derived.
+    # Only create these flag fields when working with more than 1 PointerField
     has_gene_expression: bool = False
     has_chromatin_accessibility: bool = False
     has_protein_abundance: bool = False
