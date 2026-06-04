@@ -62,6 +62,27 @@ Pick a different `resolution_field_name` per target column (e.g. `"ensembl_gene_
 
 Combine proposed ops with structural ops (`AddColumn`, `RenameColumn`, etc.) in one `CurationTransaction` when they belong to the same harmonization step.
 
+## Thin Lance pass script
+
+`skills/schema-harmonization/scripts/apply_resolution_pass.py` runs one registered resolver on one column. Use `--list-tools` for names (`resolve_genes`, `resolve_cell_types`, …). Run once per field; use `--dry-run` before committing.
+
+```bash
+python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+  <path/to/lance_db> \
+  --table GeneticPerturbationSchema \
+  --tool resolve_genes \
+  --column target_gene \
+  --field symbol \
+  --reason "standardize gene symbols" \
+  --organism human \
+  --dry-run
+
+python ... --column ensembl_gene_id --source-column target_gene \
+  --field ensembl_gene_id --reason "standardize Ensembl IDs" --organism human
+```
+
+Built-in tool names are listed with `--list-tools` (see `auto_atlas.tool_registry`).
+
 ## Apply workflow
 
 1. **Plan** — Decide the Lance `table_name` and list of `CurationOp` instances.
