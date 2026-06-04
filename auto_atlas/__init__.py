@@ -20,7 +20,6 @@ from auto_atlas.curation import (
     SetColumn,
     TransactionStatus,
     default_audit_db_path,
-    propose_column_replacements,
 )
 from auto_atlas.genes import (
     detect_organism_from_ensembl_ids,
@@ -108,7 +107,6 @@ __all__ = [
     "SetColumn",
     "TransactionStatus",
     "default_audit_db_path",
-    "propose_column_replacements",
     # Types
     "Resolution",
     "CellLineResolution",

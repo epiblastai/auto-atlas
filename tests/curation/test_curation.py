@@ -21,7 +21,6 @@ from auto_atlas.curation import (
     SetColumn,
     TransactionStatus,
     default_audit_db_path,
-    propose_column_replacements,
 )
 from auto_atlas.curation.sql import build_where_clause
 from auto_atlas.types import GeneResolution, ResolutionReport
@@ -91,9 +90,8 @@ def test_propose_dedupes_shared_old_value():
             ),
         ],
     )
-    replacements = propose_column_replacements(
+    replacements = report.propose_column_replacements(
         ["brca2", "brca2", "TP53"],
-        report,
         column="gene_symbol",
         tool="resolve_genes",
         reason="test",

@@ -5,12 +5,22 @@ Every resolver returns structured dataclasses instead of raw dicts or bare strin
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pandas as pd
 
+from auto_atlas.curation.types import ReplaceValue
 from auto_atlas.util import make_stable_uid
+
+
+def _values_equal(a: Any, b: Any) -> bool:
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return str(a) == str(b)
 
 
 @dataclass
@@ -128,6 +138,66 @@ class ResolutionReport:
     @property
     def ambiguous_values(self) -> list[str]:
         return [r.input_value for r in self.results if len(r.alternatives) > 1]
+
+    # TODO: This is too rigid, especially if the remapping is for something
+    # that isn't in an ontology or DB. Should support lambda functions for remapping
+    # values too. Lambda can be converted to a string and logged as `tool`.
+    # Including lambdas that operate over a column of a table and transform or derive a value.
+    def propose_column_replacements(
+        self,
+        current_values: list[Any],
+        *,
+        column: str,
+        tool: str,
+        reason: str,
+        resolved_value_fn: Callable[[Resolution], Any | None],
+    ) -> list[ReplaceValue]:
+        """Derive deduplicated find-and-replace operations from this resolution report.
+
+        Zips ``current_values`` with :attr:`results`. For each row, uses
+        ``resolved_value_fn`` to pick which part of the :class:`Resolution`
+        becomes the replacement ``new_value`` for ``column`` (e.g. ``lambda r: r.symbol``
+        for ``gene_symbol``, ``lambda r: r.ensembl_gene_id`` for ``ensembl_gene_id``).
+        One report can therefore drive multiple columns with different callbacks.
+
+        Skips a row when the callback returns ``None`` (unresolved or no value for this
+        column) or when the new value equals the current cell. Collapses duplicate
+        ``(column, old_value, new_value)`` keys; when several rows share a pair, keeps
+        metadata from the highest-confidence resolution.
+        """
+        if len(current_values) != len(self.results):
+            raise ValueError(
+                f"current_values length ({len(current_values)}) must match "
+                f"report.results length ({len(self.results)})"
+            )
+
+        best: dict[tuple[str, Any, Any], ReplaceValue] = {}
+
+        for current, resolution in zip(current_values, self.results, strict=True):
+            new_value = resolved_value_fn(resolution)
+            if new_value is None:
+                continue
+            if _values_equal(current, new_value):
+                continue
+
+            key = (column, current, new_value)
+            candidate = ReplaceValue(
+                column=column,
+                old_value=current,
+                new_value=new_value,
+                tool=tool,
+                reason=reason,
+                confidence=resolution.confidence,
+                source=resolution.source,
+                alternatives=list(resolution.alternatives),
+                input_value=resolution.input_value,
+            )
+
+            existing = best.get(key)
+            if existing is None or (resolution.confidence or 0.0) > (existing.confidence or 0.0):
+                best[key] = candidate
+
+        return list(best.values())
 
     def to_dataframe(self) -> pd.DataFrame:
         rows = []
