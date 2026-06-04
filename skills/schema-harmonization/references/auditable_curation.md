@@ -4,7 +4,7 @@ Harmonization mutates staged Lance tables through **audited transactions**, not 
 
 ## Where the data lives
 
-- **Lance tables** — staged by `prepare-package-for-resolution` (or equivalent). Collection-level foreign keys: `<collection_root>/lance_db/`. Per-dataset obs/var: `<dataset_dir>/lance_db/`. Table names match schema class names (e.g. `GeneticPerturbationSchema`, `CellIndex`).
+- **Lance tables** — staged by `prepare-package-for-resolution` (or equivalent). Collection-level foreign keys: `<collection_root>/lance_db/`. Per-dataset obs/var: `<dataset_dir>/lance_db/`. Table names match schema class names (e.g. `GeneticFeaturenSchema`, `CellIndex`).
 - **Audit database** — defaults to a sibling of the Lance directory: `<parent_of_lance_db>/curation_audit.db`. 
 
 ## Imports
@@ -63,14 +63,14 @@ Pick a different `resolution_field_name` per target column (e.g. `"ensembl_gene_
 
 Combine proposed ops with structural ops (`AddColumn`, `RenameColumn`, etc.) in one `CurationTransaction` when they belong to the same harmonization step.
 
-## Thin Lance pass script
+## Script for running automatic resolution tools
 
-`skills/schema-harmonization/scripts/apply_resolution_pass.py` runs one registered resolver on one column. Use `--list-tools` for names (`resolve_genes`, `resolve_cell_types`, …). Run once per field; use `--dry-run` before committing.
+`scripts/apply_resolution_pass.py` runs one registered resolver on one column. Use `--list-tools` for names (`resolve_genes`, `resolve_cell_types`, …). Run once per field; use `--dry-run` before committing.
 
 ```bash
-python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+python scripts/apply_resolution_pass.py \
   <path/to/lance_db> \
-  --table GeneticPerturbationSchema \
+  --table GeneticFeaturenSchema \
   --tool resolve_genes \
   --column target_gene \
   --resolution-field-name symbol \
@@ -85,8 +85,12 @@ Built-in tool names are listed with `--list-tools` (see `auto_atlas.tool_registr
 
 ## Apply workflow
 
-1. **Plan** — Decide the Lance `table_name` and list of `CurationOp` instances.
-2. **Optional dry run** — `applicator.apply(txn, dry_run=True)` records the transaction and ops in the audit DB but does **not** mutate Lance. Use this to validate ops and provenance before committing.
+**Scripts vs custom code** — Use `apply_resolution_pass.py` (or equivalent) when a single column’s distinct values can be resolved and written back in place. Use **custom Python** for intermediate steps: renaming raw columns, building staging columns with `value_sql`, copying across columns with `CASE`/`COALESCE`, or applying one `ResolutionReport` to multiple schema fields. Those steps must still go through `CurationApplicator`; do not mutate Lance directly.
+
+**Basic steps**
+
+1. **Plan** — Decide the Lance `table_name` and list of `CurationOp` instances (and whether a resolution script runs before or after structural ops).
+2. **Optional dry run** — `applicator.apply(txn, dry_run=True)` records the transaction and ops in the audit DB but does **not** mutate Lance. Use this to validate ops and provenance before committing. Resolution scripts support `--dry-run` the same way.
 3. **Apply** — Open an applicator, apply with column guardrails, check the result, close.
 
 ```python
@@ -94,7 +98,7 @@ lance_path = "<path/to/lance_db>"
 audit_path = default_audit_db_path(lance_path)
 
 txn = CurationTransaction(
-    table_name="GeneticPerturbationSchema",
+    table_name="GeneticFeaturenSchema",
     changes=[...],  # list[CurationOp]
     metadata={"organism": "human"},  # optional caller context
 )
@@ -112,6 +116,54 @@ finally:
 **`allowed_columns`** — Restrict which columns may be mutated. Renames are checked against the **new** name. `DropColumn` is exempt so finalization can remove any non-schema column. Omit only when you intentionally need unrestricted writes.
 
 **`ApplyResult`** — Inspect `result.status` (`applied`, `failed`, `partial`, or `pending` for dry run), `result.applied_changes` (per-op `rows_updated` and `lance_version`), and `result.error` on failure. `result.lance_version_before` is the Lance version to restore if you need to undo the whole transaction.
+
+### Example: Ensembl IDs and symbols on one table
+
+Raw table has `gene_id` (Ensembl) and `gene_name` (common name). Target schema uses `ensembl_id` and `gene_symbol`. Some rows have null `gene_id` but a usable `gene_name`.
+
+The script always resolves and replaces **in the same column** you pass to `--column`. Plan around that: either update schema columns in place, or resolve a staging column and copy results back with `SetColumn`.
+
+| Phase | What to do |
+|-------|------------|
+| Align names | `RenameColumn(column="gene_id", new_name="ensembl_id", …)` (and rename `gene_name` → `gene_symbol`). |
+| Resolve Ensembl | Script on `ensembl_id` with `--resolution-field-name ensembl_gene_id`. No-op pairs (resolved value already equals the distinct old value) emit no `ReplaceValue` ops. |
+| Null Ensembl fallback | Custom transaction: `SetColumn(column="ensembl_id", value_sql="CASE WHEN ensembl_id IS NULL THEN gene_name ELSE ensembl_id END", …)` — symbols temporarily sit in `ensembl_id` for null rows only. |
+| Resolve symbols as IDs | Script on `ensembl_id` again (`ensembl_gene_id`, often with `--input-type auto`) so coalesced symbols canonicalize to Ensembl IDs. |
+| Resolve symbols | Script on `gene_symbol` with `--resolution-field-name symbol`. |
+| Cleanup | Drop any staging columns if you used them instead of in-place coalesce. |
+
+```bash
+# After rename transaction is applied
+python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+  <path/to/lance_db> \
+  --table GeneticFeaturenSchema \
+  --tool resolve_genes \
+  --column ensembl_id \
+  --resolution-field-name ensembl_gene_id \
+  --reason "canonicalize Ensembl gene IDs" \
+  --organism human
+```
+
+```python
+# Null Ensembl rows: copy symbol into ensembl_id for a second resolve pass
+txn = CurationTransaction(
+    table_name="GeneticFeaturenSchema",
+    changes=[
+        SetColumn(
+            column="ensembl_id",
+            value_sql="CASE WHEN ensembl_id IS NULL THEN gene_name ELSE ensembl_id END",
+            tool="schema_align",
+            reason="use symbol as resolve input where Ensembl is missing",
+        ),
+    ],
+)
+```
+
+**Staging column variant** — If you prefer not to overwrite `ensembl_id` with symbols, add `gene_resolve_input` via `AddColumn` + `value_sql`, run the script on that column, then copy back with `SetColumn(column="ensembl_id", value_sql="CASE WHEN ensembl_id IS NULL THEN gene_resolve_input ELSE ensembl_id END", …)` and drop the staging column. The copy-back step exists only because the script does not write to other columns.
+
+**When custom `propose_column_replacements` helps** — If you resolve in Python (not the script) and want one `ResolutionReport` to drive `ReplaceValue` ops on both `ensembl_id` and `gene_symbol` in a single transaction, call `propose_column_replacements` twice with the same `distinct` list and report. That is optional; separate script passes on each column are usually enough.
+
+**Limitations to plan around** — `ReplaceValue` sets one `new_value` for every row matching `old_value`; it cannot map the same bad Ensembl ID to different symbols on different rows. Failed **non-null** Ensembl IDs with inconsistent `gene_name` values need an explicit agent decision (filter, manual ops, or row-level `SetColumn` expressions), not an implicit script fallback.
 
 ## Conventions for agents
 
