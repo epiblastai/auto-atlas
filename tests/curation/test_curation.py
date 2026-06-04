@@ -62,26 +62,18 @@ def test_default_audit_db_path_preserves_s3_uri():
 def test_propose_dedupes_shared_old_value():
     report = ResolutionReport(
         tool="resolve_genes",
-        total=3,
-        resolved=3,
+        total=2,
+        resolved=2,
         unresolved=0,
         ambiguous=0,
         results=[
             GeneResolution(
-                input_value="BRCA2",
+                input_value="brca2",
                 resolved_value="BRCA2",
                 confidence=1.0,
                 source="lancedb",
                 symbol="BRCA2",
                 ensembl_gene_id="ENS0001",
-            ),
-            GeneResolution(
-                input_value="BRCA2",
-                resolved_value="BRCA2",
-                confidence=0.9,
-                source="lancedb",
-                symbol="BRCA2",
-                ensembl_gene_id="ENS0002",
             ),
             GeneResolution(
                 input_value="TP53",
@@ -94,7 +86,7 @@ def test_propose_dedupes_shared_old_value():
         ],
     )
     replacements = report.propose_column_replacements(
-        ["brca2", "brca2", "TP53"],
+        ["brca2", "TP53"],
         column="gene_symbol",
         reason="test",
         resolution_field_name="symbol",
@@ -118,7 +110,7 @@ def _load_apply_resolution_pass_module():
     return mod
 
 
-def test_resolution_report_for_column_aligns_rows():
+def test_resolve_distinct_values_returns_tool_report():
     mod = _load_apply_resolution_pass_module()
 
     def fake_resolve(values, organism="human"):
@@ -141,11 +133,10 @@ def test_resolution_report_for_column_aligns_rows():
         )
 
     with patch.dict(RESOLVER_TOOLS, {"fake": ResolverTool(fake_resolve)}):
-        report = mod.resolution_report_for_column(["brca2", None, "brca2"], "fake")
-    assert len(report.results) == 3
+        report = mod.resolve_distinct_values(["brca2", None, "brca2"], "fake")
+    assert len(report.results) == 1
+    assert report.results[0].input_value == "brca2"
     assert report.results[0].symbol == "BRCA2"
-    assert report.results[1].resolved_value is None
-    assert report.results[2].symbol == "BRCA2"
 
 
 def test_apply_resolution_pass_updates_column(atlas_dirs):
@@ -189,7 +180,7 @@ def test_apply_resolution_pass_updates_column(atlas_dirs):
             table_name="gene_expression",
             tool="resolve_genes",
             column="gene_symbol",
-            field="symbol",
+            resolution_field_name="symbol",
             reason="test",
         )
     assert result is not None

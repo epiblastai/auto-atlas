@@ -44,21 +44,22 @@ Ops in a single transaction run **in order**. You can depend on earlier ops in t
 
 ## From resolver output to ops
 
-For row-aligned resolution reports, call `ResolutionReport.propose_column_replacements` to build deduplicated `ReplaceValue` ops:
+Call `ResolutionReport.propose_column_replacements` to build `ReplaceValue` ops from distinct old values:
 
 ```python
-report = resolve_genes(current_values, organism="human")  # ResolutionReport
+distinct = list(dict.fromkeys(gene_symbols))  # values sent to the resolver
+report = resolve_genes(distinct, organism="human")
 ops = report.propose_column_replacements(
-    current_values,          # column values in row order
+    distinct,                # same distinct old values, aligned with report.results
     column="gene_symbol",
     reason="standardize gene symbols",
     resolution_field_name="symbol",
 )
 ```
 
-`report.tool` is set by the resolver (e.g. `"resolve_genes"`) and is copied onto each `ReplaceValue` as provenance. Convenience wrappers such as `resolve_cell_types` set `tool` to their own name.
+`report.tool` is set by the resolver (e.g. `"resolve_genes"`) and is copied onto each `ReplaceValue` as provenance. Lance matches each op's `old_value` in the column (find-and-replace), not by row index.
 
-Pick a different `resolution_field_name` per target column (e.g. `"ensembl_gene_id"` for Ensembl IDs). Unresolved rows and no-op replacements are skipped automatically.
+Pick a different `resolution_field_name` per target column (e.g. `"ensembl_gene_id"`). Unresolved values and no-op replacements are skipped automatically.
 
 Combine proposed ops with structural ops (`AddColumn`, `RenameColumn`, etc.) in one `CurationTransaction` when they belong to the same harmonization step.
 
@@ -72,14 +73,13 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
   --table GeneticPerturbationSchema \
   --tool resolve_genes \
   --column target_gene \
-  --field symbol \
+  --resolution-field-name symbol \
   --reason "standardize gene symbols" \
   --organism human \
   --dry-run
-
-python ... --column ensembl_gene_id --source-column target_gene \
-  --field ensembl_gene_id --reason "standardize Ensembl IDs" --organism human
 ```
+
+The script only resolves and replaces within the same column. To populate one column from another (e.g. copy symbols into a staging column, or replace failed Ensembl IDs from a symbol column), do that first with explicit `AddColumn` / `SetColumn` / `ReplaceValue` transactions so the audit trail records every step. Then run a resolution pass on the column that holds the values being resolved.
 
 Built-in tool names are listed with `--list-tools` (see `auto_atlas.tool_registry`).
 

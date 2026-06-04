@@ -1,11 +1,13 @@
 """Apply one resolver pass to one Lance column.
 
-Run once per (column, field) pair. Example: symbol on ``target_gene``, then
-Ensembl IDs with ``--column ensembl_gene_id --source-column target_gene``.
+Resolves distinct values in ``--column`` and applies find-and-replace ops on that
+same column. Run once per ``--resolution-field-name``. Cross-column workflows (e.g. filling Ensembl
+IDs from symbols) must be separate audited steps — ``AddColumn``, ``SetColumn``, or
+explicit ``ReplaceValue`` ops — before running this script on the target column.
 
     python skills/schema-harmonization/scripts/apply_resolution_pass.py \\
         <lance_db> --table T --tool resolve_genes --column target_gene \\
-        --field symbol --reason "standardize symbols" --organism human
+        --resolution-field-name symbol --reason "standardize symbols" --organism human
 
     python ... --dry-run   # audit only, no Lance writes
 
@@ -26,7 +28,7 @@ import pandas as pd
 from auto_atlas import CurationApplicator, CurationTransaction, default_audit_db_path
 from auto_atlas.curation.types import ApplyResult
 from auto_atlas.tool_registry import RESOLVER_TOOLS, list_resolver_tools
-from auto_atlas.types import Resolution, ResolutionReport
+from auto_atlas.types import ResolutionReport
 
 
 def _optional_str(value: Any) -> str | None:
@@ -40,62 +42,39 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
-def _skipped() -> Resolution:
-    return Resolution(
-        input_value="",
-        resolved_value=None,
-        confidence=0.0,
-        source="skipped",
-    )
+def _distinct_non_null(values: list[Any]) -> list[str]:
+    return list(dict.fromkeys(s for s in (_optional_str(v) for v in values) if s is not None))
 
 
-def resolution_report_for_column(
+def resolve_distinct_values(
     values: list[Any],
     tool: str,
     *,
     resolver_kwargs: dict[str, Any] | None = None,
 ) -> ResolutionReport:
-    """Resolve distinct non-null cell values and expand back to one result per row."""
+    """Resolve distinct non-null cell values; return the tool's ``ResolutionReport``."""
     spec = RESOLVER_TOOLS.get(tool)
     if spec is None:
         raise ValueError(
             f"Unknown tool {tool!r}. Known tools: {', '.join(list_resolver_tools())}"
         )
 
-    normalized = [_optional_str(v) for v in values]
-    unique = list(dict.fromkeys(s for s in normalized if s is not None))
-    kwargs = dict(resolver_kwargs or {})
-
-    if not unique:
+    distinct = _distinct_non_null(values)
+    if not distinct:
         return ResolutionReport(
             tool=tool,
-            total=len(values),
+            total=0,
             resolved=0,
-            unresolved=len(values),
+            unresolved=0,
             ambiguous=0,
-            results=[_skipped()] * len(values),
+            results=[],
         )
 
-    partial = spec.fn(**{spec.values_param: unique, **kwargs})
-    if not isinstance(partial, ResolutionReport):
+    kwargs = dict(resolver_kwargs or {})
+    report = spec.fn(**{spec.values_param: distinct, **kwargs})
+    if not isinstance(report, ResolutionReport):
         raise TypeError(f"{tool} did not return ResolutionReport")
-
-    lookup = {r.input_value: r for r in partial.results}
-    missing = [s for s in unique if s not in lookup]
-    if missing:
-        raise ValueError(f"{tool} did not return results for: {missing[:5]}")
-
-    aligned = [lookup[s] if s is not None else _skipped() for s in normalized]
-    resolved_count = sum(1 for r in aligned if r.resolved_value is not None)
-    ambiguous_count = sum(1 for r in aligned if len(r.alternatives) > 1)
-    return ResolutionReport(
-        tool=partial.tool,
-        total=len(aligned),
-        resolved=resolved_count,
-        unresolved=len(aligned) - resolved_count,
-        ambiguous=ambiguous_count,
-        results=aligned,
-    )
+    return report
 
 
 def _read_column(lance_db_path: str, table_name: str, column: str) -> list[Any]:
@@ -114,29 +93,16 @@ def apply_resolution_pass(
     table_name: str,
     tool: str,
     column: str,
-    field: str,
+    resolution_field_name: str,
     reason: str,
-    source_column: str | None = None,
     resolver_kwargs: dict[str, Any] | None = None,
-    allowed_columns: set[str] | None = None,
     dry_run: bool = False,
 ) -> ApplyResult | None:
-    """Run a registered resolver on ``source_column`` and apply replacements to ``column``."""
-    source_column = source_column or column
-    source_values = _read_column(lance_db_path, table_name, source_column)
-    target_values = (
-        source_values
-        if column == source_column
-        else _read_column(lance_db_path, table_name, column)
-    )
-    if len(source_values) != len(target_values):
-        raise ValueError(
-            f"{source_column!r} ({len(source_values)} rows) and {column!r} "
-            f"({len(target_values)} rows) differ in length"
-        )
+    """Resolve distinct values in ``column`` and apply replacements in that column."""
+    column_values = _read_column(lance_db_path, table_name, column)
 
-    report = resolution_report_for_column(
-        source_values, tool, resolver_kwargs=resolver_kwargs
+    report = resolve_distinct_values(
+        column_values, tool, resolver_kwargs=resolver_kwargs
     )
     print(
         f"Resolver {report.tool}: {report.resolved}/{report.total} resolved, "
@@ -146,23 +112,23 @@ def apply_resolution_pass(
         sample = report.unresolved_values[:15]
         print(f"  Unresolved sample ({len(report.unresolved_values)} total): {sample}")
 
+    distinct = _distinct_non_null(column_values)
     ops = report.propose_column_replacements(
-        target_values,
+        distinct,
         column=column,
         reason=reason,
-        resolution_field_name=field,
+        resolution_field_name=resolution_field_name,
     )
-    print(f"  {column} <- {field}: {len(ops)} ReplaceValue op(s)")
+    print(f"  {column} <- {resolution_field_name}: {len(ops)} ReplaceValue op(s)")
     if not ops:
         return None
 
-    allowed = allowed_columns if allowed_columns is not None else {column}
     txn = CurationTransaction(table_name=table_name, changes=ops)
     applicator = CurationApplicator(
         lance_db_path, audit_db_path=default_audit_db_path(lance_db_path)
     )
     try:
-        return applicator.apply(txn, dry_run=dry_run, allowed_columns=allowed)
+        return applicator.apply(txn, dry_run=dry_run, allowed_columns={column})
     finally:
         applicator.close()
 
@@ -173,20 +139,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--table", required=True)
     parser.add_argument("--tool", help="Registered resolver name")
     parser.add_argument("--list-tools", action="store_true")
-    parser.add_argument("--column", help="Column to update")
+    parser.add_argument("--column", help="Column to resolve and update")
     parser.add_argument(
-        "--source-column",
-        default=None,
-        help="Column to resolve (default: same as --column)",
-    )
-    parser.add_argument(
-        "--field",
+        "--resolution-field-name",
         help="Resolution attribute for new values (e.g. symbol, ensembl_gene_id, resolved_value)",
     )
     parser.add_argument("--reason", required=False)
     parser.add_argument("--organism", default=None)
     parser.add_argument("--input-type", default=None, dest="input_type")
-    parser.add_argument("--allowed-columns", default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -200,7 +160,7 @@ def main(argv: list[str] | None = None) -> None:
         for flag, val in (
             ("--tool", args.tool),
             ("--column", args.column),
-            ("--field", args.field),
+            ("--resolution-field-name", args.resolution_field_name),
             ("--reason", args.reason),
         )
         if not val
@@ -214,20 +174,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.input_type is not None:
         resolver_kwargs["input_type"] = args.input_type
 
-    allowed_columns = None
-    if args.allowed_columns:
-        allowed_columns = {c.strip() for c in args.allowed_columns.split(",") if c.strip()}
-
     result = apply_resolution_pass(
         os.fspath(args.lance_db_path),
         table_name=args.table,
         tool=args.tool,
         column=args.column,
-        field=args.field,
+        resolution_field_name=args.resolution_field_name,
         reason=args.reason,
-        source_column=args.source_column,
         resolver_kwargs=resolver_kwargs or None,
-        allowed_columns=allowed_columns,
         dry_run=args.dry_run,
     )
 

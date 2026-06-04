@@ -114,20 +114,23 @@ class ResolutionReport:
         reason: str,
         resolution_field_name: str,
     ) -> list[ReplaceValue]:
-        """Derive deduplicated find-and-replace operations from this resolution report.
+        """Derive find-and-replace operations from this resolution report.
 
         Uses :attr:`tool` as the ``ReplaceValue.tool`` provenance field.
 
-        Zips ``current_values`` with :attr:`results`. For each row, reads
-        ``resolution_field_name`` on the :class:`Resolution` as the replacement
-        ``new_value`` for ``column`` (e.g. ``"symbol"`` for ``gene_symbol``,
-        ``"ensembl_gene_id"`` for an Ensembl ID column). One report can drive multiple
-        columns with different field names.
+        ``current_values`` are the **distinct old values** being replaced in ``column``
+        (in the same order as :attr:`results`). This is not a per-table-row list: Lance
+        applies each op by matching ``old_value`` anywhere in the column.
 
-        Skips a row when the field is ``None`` (unresolved or no value for this column)
-        or when the new value equals the current cell. Collapses duplicate
-        ``(column, old_value, new_value)`` keys; when several rows share a pair, keeps
-        metadata from the highest-confidence resolution.
+        Zips ``current_values`` with :attr:`results`. For each pair, reads
+        ``resolution_field_name`` on the :class:`Resolution` as ``new_value`` (e.g.
+        ``"symbol"`` or ``"ensembl_gene_id"``). One report can drive multiple columns
+        with different field names by calling this method again with different
+        ``current_values`` / ``resolution_field_name`` pairs.
+
+        Skips a pair when the field is ``None`` (unresolved) or when ``new_value``
+        equals ``current``. Collapses duplicate ``(column, old_value, new_value)``
+        keys, keeping metadata from the highest-confidence resolution.
         """
         if len(current_values) != len(self.results):
             raise ValueError(
