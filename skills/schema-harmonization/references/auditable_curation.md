@@ -168,7 +168,6 @@ txn = CurationTransaction(
 ## Conventions for agents
 
 - **One logical step → one transaction** — e.g. “resolve gene symbols on this table” or “rename raw columns for schema alignment”. Split unrelated tables or independent phases into separate transactions.
-- **Never edit Lance outside the applicator** for harmonization work; otherwise the audit trail will not match reality. If this presents problems, raise it to the user and do not proceed without their guidance.
+- **Never edit Lance outside the applicator** for harmonization work; otherwise the audit trail will not match reality. Assertions checked later will raise if direct edits are discovered. If this restriction presents problems, raise it to the user and do not proceed without their guidance.
 - **Always set `tool`** to the resolver or script name (e.g. `"resolve_ontology_terms"`, `"schema_align"`).
-- **Prefer `allowed_columns`** scoped to the schema fields you are harmonizing in that step.
 - **Dry-run first** when a transaction is large, spans many `ReplaceValue` ops, or mixes structural and value ops.
