@@ -51,13 +51,14 @@ report = resolve_genes(current_values, organism="human")  # ResolutionReport
 ops = report.propose_column_replacements(
     current_values,          # column values in row order
     column="gene_symbol",
-    tool="resolve_genes",
     reason="standardize gene symbols",
-    resolved_value_fn=lambda r: r.symbol,
+    resolution_field_name="symbol",
 )
 ```
 
-Pick a different `resolved_value_fn` per target column (e.g. `lambda r: r.ensembl_gene_id` for Ensembl IDs). Unresolved rows and no-op replacements are skipped automatically.
+`report.tool` is set by the resolver (e.g. `"resolve_genes"`) and is copied onto each `ReplaceValue` as provenance. Convenience wrappers such as `resolve_cell_types` set `tool` to their own name.
+
+Pick a different `resolution_field_name` per target column (e.g. `"ensembl_gene_id"` for Ensembl IDs). Unresolved rows and no-op replacements are skipped automatically.
 
 Combine proposed ops with structural ops (`AddColumn`, `RenameColumn`, etc.) in one `CurationTransaction` when they belong to the same harmonization step.
 

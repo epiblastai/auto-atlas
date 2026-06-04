@@ -392,6 +392,8 @@ def resolve_ontology_terms(
     entity: OntologyEntity,
     organism: str | None = None,
     min_similarity: float = 0.8,
+    *,
+    tool: str = "resolve_ontology_terms",
 ) -> ResolutionReport:
     """Resolve free-text values to ontology terms with CELLxGENE-compatible IDs.
 
@@ -423,6 +425,7 @@ def resolve_ontology_terms(
     ambiguous_count = sum(1 for r in results if len(r.alternatives) > 1)
 
     return ResolutionReport(
+        tool=tool,
         total=len(values),
         resolved=resolved_count,
         unresolved=len(values) - resolved_count,
@@ -451,32 +454,32 @@ def get_ontology_term_id(
 
 def resolve_cell_types(values: list[str]) -> ResolutionReport:
     """Resolve cell type names to Cell Ontology (CL) terms."""
-    return resolve_ontology_terms(values, OntologyEntity.CELL_TYPE)
+    return resolve_ontology_terms(values, OntologyEntity.CELL_TYPE, tool="resolve_cell_types")
 
 
 def resolve_tissues(values: list[str]) -> ResolutionReport:
     """Resolve tissue names to UBERON terms."""
-    return resolve_ontology_terms(values, OntologyEntity.TISSUE)
+    return resolve_ontology_terms(values, OntologyEntity.TISSUE, tool="resolve_tissues")
 
 
 def resolve_diseases(values: list[str]) -> ResolutionReport:
     """Resolve disease names to MONDO terms."""
-    return resolve_ontology_terms(values, OntologyEntity.DISEASE)
+    return resolve_ontology_terms(values, OntologyEntity.DISEASE, tool="resolve_diseases")
 
 
 def resolve_organisms(values: list[str]) -> ResolutionReport:
     """Resolve organism names to NCBITaxon terms."""
-    return resolve_ontology_terms(values, OntologyEntity.ORGANISM)
+    return resolve_ontology_terms(values, OntologyEntity.ORGANISM, tool="resolve_organisms")
 
 
 def resolve_assays(values: list[str]) -> ResolutionReport:
     """Resolve assay names to EFO terms."""
-    return resolve_ontology_terms(values, OntologyEntity.ASSAY)
+    return resolve_ontology_terms(values, OntologyEntity.ASSAY, tool="resolve_assays")
 
 
 def resolve_cell_lines(values: list[str]) -> ResolutionReport:
     """Resolve cell line names to Cellosaurus cell line records."""
-    return resolve_ontology_terms(values, OntologyEntity.CELL_LINE)
+    return resolve_ontology_terms(values, OntologyEntity.CELL_LINE, tool="resolve_cell_lines")
 
 
 # ---------------------------------------------------------------------------

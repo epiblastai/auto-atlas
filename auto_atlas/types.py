@@ -5,9 +5,8 @@ Every resolver returns structured dataclasses instead of raw dicts or bare strin
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field, fields
-from typing import Any, ClassVar
+from typing import Any
 
 import pandas as pd
 
@@ -92,6 +91,7 @@ class OntologyResolution(Resolution):
 class ResolutionReport:
     """Summary of a batch resolution run."""
 
+    tool: str  # Resolver that produced this report (e.g. ``"resolve_genes"``)
     total: int
     resolved: int
     unresolved: int
@@ -111,20 +111,21 @@ class ResolutionReport:
         current_values: list[Any],
         *,
         column: str,
-        tool: str,
         reason: str,
-        resolved_value_fn: Callable[[Resolution], Any | None],
+        resolution_field_name: str,
     ) -> list[ReplaceValue]:
         """Derive deduplicated find-and-replace operations from this resolution report.
 
-        Zips ``current_values`` with :attr:`results`. For each row, uses
-        ``resolved_value_fn`` to pick which part of the :class:`Resolution`
-        becomes the replacement ``new_value`` for ``column`` (e.g. ``lambda r: r.symbol``
-        for ``gene_symbol``, ``lambda r: r.ensembl_gene_id`` for ``ensembl_gene_id``).
-        One report can therefore drive multiple columns with different callbacks.
+        Uses :attr:`tool` as the ``ReplaceValue.tool`` provenance field.
 
-        Skips a row when the callback returns ``None`` (unresolved or no value for this
-        column) or when the new value equals the current cell. Collapses duplicate
+        Zips ``current_values`` with :attr:`results`. For each row, reads
+        ``resolution_field_name`` on the :class:`Resolution` as the replacement
+        ``new_value`` for ``column`` (e.g. ``"symbol"`` for ``gene_symbol``,
+        ``"ensembl_gene_id"`` for an Ensembl ID column). One report can drive multiple
+        columns with different field names.
+
+        Skips a row when the field is ``None`` (unresolved or no value for this column)
+        or when the new value equals the current cell. Collapses duplicate
         ``(column, old_value, new_value)`` keys; when several rows share a pair, keeps
         metadata from the highest-confidence resolution.
         """
@@ -137,7 +138,7 @@ class ResolutionReport:
         best: dict[tuple[str, Any, Any], ReplaceValue] = {}
 
         for current, resolution in zip(current_values, self.results, strict=True):
-            new_value = resolved_value_fn(resolution)
+            new_value = getattr(resolution, resolution_field_name)
             if new_value is None:
                 continue
             if _values_equal(current, new_value):
@@ -148,7 +149,7 @@ class ResolutionReport:
                 column=column,
                 old_value=current,
                 new_value=new_value,
-                tool=tool,
+                tool=self.tool,
                 reason=reason,
                 confidence=resolution.confidence,
                 source=resolution.source,

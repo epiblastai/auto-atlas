@@ -185,6 +185,7 @@ def resolve_guide_sequences(
     ambiguous_count = sum(1 for r in results if len(r.alternatives) > 0)
 
     return ResolutionReport(
+        tool="resolve_guide_sequences",
         total=len(sequences),
         resolved=resolved_count,
         unresolved=len(sequences) - resolved_count,

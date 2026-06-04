@@ -59,6 +59,7 @@ def test_default_audit_db_path_preserves_s3_uri():
 
 def test_propose_dedupes_shared_old_value():
     report = ResolutionReport(
+        tool="resolve_genes",
         total=3,
         resolved=3,
         unresolved=0,
@@ -93,14 +94,14 @@ def test_propose_dedupes_shared_old_value():
     replacements = report.propose_column_replacements(
         ["brca2", "brca2", "TP53"],
         column="gene_symbol",
-        tool="resolve_genes",
         reason="test",
-        resolved_value_fn=lambda r: r.symbol,
+        resolution_field_name="symbol",
     )
     assert len(replacements) == 1
     assert replacements[0].old_value == "brca2"
     assert replacements[0].new_value == "BRCA2"
     assert replacements[0].confidence == 1.0
+    assert replacements[0].tool == "resolve_genes"
 
 
 def test_apply_round_trip(atlas_dirs):

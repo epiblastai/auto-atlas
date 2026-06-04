@@ -433,6 +433,7 @@ def resolve_genes(
     ambiguous_count = sum(1 for r in final_results if len(r.alternatives) > 0)
 
     return ResolutionReport(
+        tool="resolve_genes",
         total=len(values),
         resolved=resolved_count,
         unresolved=len(values) - resolved_count,
