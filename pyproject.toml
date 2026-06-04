@@ -16,7 +16,8 @@ dependencies = [
     "boto3",
     "gget",
     "mygene",
-    "homeobox",
+    "homeobox>=0.2.7",
+    "openpyxl",
 ]
 
 [project.optional-dependencies]
