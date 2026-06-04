@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import lancedb
 import pyarrow as pa
@@ -21,8 +22,8 @@ from auto_atlas.curation import (
     SetColumn,
     TransactionStatus,
     default_audit_db_path,
-    propose_column_replacements,
 )
+from auto_atlas.tool_registry import RESOLVER_TOOLS, ResolverTool
 from auto_atlas.curation.sql import build_where_clause
 from auto_atlas.types import GeneResolution, ResolutionReport
 
@@ -60,26 +61,19 @@ def test_default_audit_db_path_preserves_s3_uri():
 
 def test_propose_dedupes_shared_old_value():
     report = ResolutionReport(
-        total=3,
-        resolved=3,
+        tool="resolve_genes",
+        total=2,
+        resolved=2,
         unresolved=0,
         ambiguous=0,
         results=[
             GeneResolution(
-                input_value="BRCA2",
+                input_value="brca2",
                 resolved_value="BRCA2",
                 confidence=1.0,
                 source="lancedb",
                 symbol="BRCA2",
                 ensembl_gene_id="ENS0001",
-            ),
-            GeneResolution(
-                input_value="BRCA2",
-                resolved_value="BRCA2",
-                confidence=0.9,
-                source="lancedb",
-                symbol="BRCA2",
-                ensembl_gene_id="ENS0002",
             ),
             GeneResolution(
                 input_value="TP53",
@@ -91,18 +85,109 @@ def test_propose_dedupes_shared_old_value():
             ),
         ],
     )
-    replacements = propose_column_replacements(
-        ["brca2", "brca2", "TP53"],
-        report,
+    replacements = report.propose_column_replacements(
+        ["brca2", "TP53"],
         column="gene_symbol",
-        tool="resolve_genes",
         reason="test",
-        resolved_value_fn=lambda r: r.symbol,
+        resolution_field_name="symbol",
     )
     assert len(replacements) == 1
     assert replacements[0].old_value == "brca2"
     assert replacements[0].new_value == "BRCA2"
     assert replacements[0].confidence == 1.0
+    assert replacements[0].tool == "resolve_genes"
+
+
+def _load_apply_resolution_pass_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "apply_resolution_pass",
+        "skills/schema-harmonization/scripts/apply_resolution_pass.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_resolve_distinct_values_returns_tool_report():
+    mod = _load_apply_resolution_pass_module()
+
+    def fake_resolve(values, organism="human"):
+        return ResolutionReport(
+            tool="fake",
+            total=len(values),
+            resolved=len(values),
+            unresolved=0,
+            ambiguous=0,
+            results=[
+                GeneResolution(
+                    input_value=v,
+                    resolved_value=v.upper(),
+                    confidence=1.0,
+                    source="test",
+                    symbol=v.upper(),
+                )
+                for v in values
+            ],
+        )
+
+    with patch.dict(RESOLVER_TOOLS, {"fake": ResolverTool(fake_resolve)}):
+        report = mod.resolve_distinct_values(["brca2", None, "brca2"], "fake")
+    assert len(report.results) == 1
+    assert report.results[0].input_value == "brca2"
+    assert report.results[0].symbol == "BRCA2"
+
+
+def test_apply_resolution_pass_updates_column(atlas_dirs):
+    mod = _load_apply_resolution_pass_module()
+    db_uri, _audit_path = atlas_dirs
+    db = lancedb.connect(db_uri)
+    db.create_table(
+        "gene_expression",
+        data=pa.table(
+            {
+                "uid": ["aaa", "bbb", "ccc"],
+                "gene_symbol": ["brca2", "brca2", "TP53"],
+                "ensembl_id": ["ENS1", "ENS2", "ENS3"],
+            }
+        ),
+        mode="overwrite",
+    )
+
+    def fake_resolve(values, organism="human"):
+        return ResolutionReport(
+            tool="resolve_genes",
+            total=len(values),
+            resolved=len(values),
+            unresolved=0,
+            ambiguous=0,
+            results=[
+                GeneResolution(
+                    input_value=v,
+                    resolved_value=v.upper(),
+                    confidence=1.0,
+                    source="test",
+                    symbol=v.upper(),
+                )
+                for v in values
+            ],
+        )
+
+    with patch.dict(RESOLVER_TOOLS, {"resolve_genes": ResolverTool(fake_resolve)}):
+        result = mod.apply_resolution_pass(
+            db_uri,
+            table_name="gene_expression",
+            tool="resolve_genes",
+            column="gene_symbol",
+            resolution_field_name="symbol",
+            reason="test",
+        )
+    assert result is not None
+    assert result.status == TransactionStatus.APPLIED
+    updated = lancedb.connect(db_uri).open_table("gene_expression").to_arrow().to_pydict()
+    assert updated["gene_symbol"].count("BRCA2") == 2
+    assert updated["gene_symbol"].count("TP53") == 1
 
 
 def test_apply_round_trip(atlas_dirs):

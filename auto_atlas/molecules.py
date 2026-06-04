@@ -534,6 +534,7 @@ def resolve_molecules(
     ambiguous_count = sum(1 for r in results if len(r.alternatives) > 1)
 
     return ResolutionReport(
+        tool="resolve_molecules",
         total=len(values),
         resolved=resolved_count,
         unresolved=len(values) - resolved_count,

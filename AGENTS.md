@@ -1,2 +1,3 @@
 - Do not use Path or pathlib because it does not work correctly for s3 urls.
 - Do not support backwards compatibility unless explicitly asked by the user. Assume that APIs are not stable and that they may be changed as needed.
+- Use `db.list_tables().tables` to get a list of table names in a LanceDB instead of the deprecated `table_names()` method.

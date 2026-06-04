@@ -5,46 +5,34 @@ Every resolver returns structured dataclasses instead of raw dicts or bare strin
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import ClassVar
+from dataclasses import dataclass, field, fields
+from typing import Any
 
 import pandas as pd
 
-from auto_atlas.util import make_stable_uid
+from auto_atlas.curation.types import ReplaceValue
+
+
+def _values_equal(a: Any, b: Any) -> bool:
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return str(a) == str(b)
 
 
 @dataclass
 class Resolution:
     """Base result for any single resolution attempt."""
-
-    _identity_fields: ClassVar[tuple[str, ...]] = ()
-
     input_value: str
     resolved_value: str | None  # Canonical form, or None if failed
     confidence: float  # 1.0 = exact, 0.0 = failed
     source: str  # Which API/ontology provided the resolution
     alternatives: list[str] = field(default_factory=list)
 
-    @property
-    def stable_uid(self) -> str:
-        """Deterministic UID derived from identity fields.
-
-        Falls back to hashing ("unresolved", input_value) when any identity
-        field is None, so re-runs produce the same UID for unresolved entries.
-        """
-        values = []
-        for f in self._identity_fields:
-            val = getattr(self, f)
-            if val is None:
-                return make_stable_uid("unresolved", self.input_value)
-            values.append(str(val))
-        return make_stable_uid(*values)
-
 
 @dataclass
 class GeneResolution(Resolution):
-    _identity_fields: ClassVar[tuple[str, ...]] = ("ensembl_gene_id", "organism")
-
     ensembl_gene_id: str | None = None
     symbol: str | None = None  # HGNC/MGI canonical symbol
     organism: str | None = None
@@ -53,8 +41,6 @@ class GeneResolution(Resolution):
 
 @dataclass
 class MoleculeResolution(Resolution):
-    _identity_fields: ClassVar[tuple[str, ...]] = ("pubchem_cid",)
-
     pubchem_cid: int | None = None
     canonical_smiles: str | None = None
     inchi_key: str | None = None
@@ -64,8 +50,6 @@ class MoleculeResolution(Resolution):
 
 @dataclass
 class ProteinResolution(Resolution):
-    _identity_fields: ClassVar[tuple[str, ...]] = ("uniprot_id", "organism")
-
     uniprot_id: str | None = None
     gene_name: str | None = None
     protein_name: str | None = None
@@ -76,14 +60,6 @@ class ProteinResolution(Resolution):
 
 @dataclass
 class GuideRnaResolution(Resolution):
-    _identity_fields: ClassVar[tuple[str, ...]] = (
-        "chromosome",
-        "target_start",
-        "target_end",
-        "target_strand",
-        "assembly",
-    )
-
     chromosome: str | None = None  # e.g. "chr17"
     target_start: int | None = None
     target_end: int | None = None
@@ -115,6 +91,7 @@ class OntologyResolution(Resolution):
 class ResolutionReport:
     """Summary of a batch resolution run."""
 
+    tool: str  # Resolver that produced this report (e.g. ``"resolve_genes"``)
     total: int
     resolved: int
     unresolved: int
@@ -129,54 +106,74 @@ class ResolutionReport:
     def ambiguous_values(self) -> list[str]:
         return [r.input_value for r in self.results if len(r.alternatives) > 1]
 
+    def propose_column_replacements(
+        self,
+        current_values: list[Any],
+        *,
+        column: str,
+        reason: str,
+        resolution_field_name: str,
+    ) -> list[ReplaceValue]:
+        """Derive find-and-replace operations from this resolution report.
+
+        Uses :attr:`tool` as the ``ReplaceValue.tool`` provenance field.
+
+        ``current_values`` are the **distinct old values** being replaced in ``column``
+        (in the same order as :attr:`results`). This is not a per-table-row list: Lance
+        applies each op by matching ``old_value`` anywhere in the column.
+
+        Zips ``current_values`` with :attr:`results`. For each pair, reads
+        ``resolution_field_name`` on the :class:`Resolution` as ``new_value`` (e.g.
+        ``"symbol"`` or ``"ensembl_gene_id"``). One report can drive multiple columns
+        with different field names by calling this method again with different
+        ``current_values`` / ``resolution_field_name`` pairs.
+
+        Skips a pair when the field is ``None`` (unresolved) or when ``new_value``
+        equals ``current``. Collapses duplicate ``(column, old_value, new_value)``
+        keys, keeping metadata from the highest-confidence resolution.
+        """
+        if len(current_values) != len(self.results):
+            raise ValueError(
+                f"current_values length ({len(current_values)}) must match "
+                f"report.results length ({len(self.results)})"
+            )
+
+        best: dict[tuple[str, Any, Any], ReplaceValue] = {}
+
+        for current, resolution in zip(current_values, self.results, strict=True):
+            new_value = getattr(resolution, resolution_field_name)
+            if new_value is None:
+                continue
+            if _values_equal(current, new_value):
+                continue
+
+            key = (column, current, new_value)
+            candidate = ReplaceValue(
+                column=column,
+                old_value=current,
+                new_value=new_value,
+                tool=self.tool,
+                reason=reason,
+                confidence=resolution.confidence,
+                source=resolution.source,
+                alternatives=list(resolution.alternatives),
+                input_value=resolution.input_value,
+            )
+
+            existing = best.get(key)
+            if existing is None or (resolution.confidence or 0.0) > (existing.confidence or 0.0):
+                best[key] = candidate
+
+        return list(best.values())
+
     def to_dataframe(self) -> pd.DataFrame:
         rows = []
         for r in self.results:
-            row = {
-                "input_value": r.input_value,
-                "resolved_value": r.resolved_value,
-                "confidence": r.confidence,
-                "source": r.source,
-                "alternatives": "; ".join(r.alternatives) if r.alternatives else None,
-            }
-            # Add subclass-specific fields
-            if isinstance(r, GeneResolution):
-                row["ensembl_gene_id"] = r.ensembl_gene_id
-                row["symbol"] = r.symbol
-                row["organism"] = r.organism
-                row["ncbi_gene_id"] = r.ncbi_gene_id
-            elif isinstance(r, MoleculeResolution):
-                row["pubchem_cid"] = r.pubchem_cid
-                row["canonical_smiles"] = r.canonical_smiles
-                row["inchi_key"] = r.inchi_key
-                row["iupac_name"] = r.iupac_name
-                row["chembl_id"] = r.chembl_id
-            elif isinstance(r, ProteinResolution):
-                row["uniprot_id"] = r.uniprot_id
-                row["gene_name"] = r.gene_name
-                row["protein_name"] = r.protein_name
-                row["organism"] = r.organism
-                row["sequence"] = r.sequence
-                row["sequence_length"] = r.sequence_length
-            elif isinstance(r, GuideRnaResolution):
-                row["chromosome"] = r.chromosome
-                row["target_start"] = r.target_start
-                row["target_end"] = r.target_end
-                row["target_strand"] = r.target_strand
-                row["intended_gene_name"] = r.intended_gene_name
-                row["intended_ensembl_gene_id"] = r.intended_ensembl_gene_id
-                row["target_context"] = r.target_context
-                row["assembly"] = r.assembly
-                row["blat_pct_match"] = r.blat_pct_match
-            elif isinstance(r, CellLineResolution):
-                row["cellosaurus_id"] = r.cellosaurus_id
-                row["cell_line_name"] = r.cell_line_name
-                row["species"] = r.species
-                row["disease"] = r.disease
-                row["sex"] = r.sex
-                row["category"] = r.category
-            elif isinstance(r, OntologyResolution):
-                row["ontology_term_id"] = r.ontology_term_id
-                row["ontology_name"] = r.ontology_name
+            row = {}
+            for f in fields(r):
+                val = getattr(r, f.name)
+                if f.name == "alternatives":
+                    val = "; ".join(val) if val else None
+                row[f.name] = val
             rows.append(row)
         return pd.DataFrame(rows)

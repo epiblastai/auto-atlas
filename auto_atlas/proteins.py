@@ -67,7 +67,14 @@ def resolve_proteins(
         One ``ProteinResolution`` per input value.
     """
     if not values:
-        return ResolutionReport(total=0, resolved=0, unresolved=0, ambiguous=0, results=[])
+        return ResolutionReport(
+            tool="resolve_proteins",
+            total=0,
+            resolved=0,
+            unresolved=0,
+            ambiguous=0,
+            results=[],
+        )
 
     org_record = _get_organism_record(organism)
     scientific_name = org_record["scientific_name"]
@@ -183,6 +190,7 @@ def resolve_proteins(
     ambiguous_count = sum(1 for r in final_results if len(r.alternatives) > 0)
 
     return ResolutionReport(
+        tool="resolve_proteins",
         total=len(values),
         resolved=resolved_count,
         unresolved=len(values) - resolved_count,
