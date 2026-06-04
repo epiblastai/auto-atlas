@@ -153,7 +153,8 @@ txn = CurationTransaction(
             column="ensembl_id",
             value_sql="CASE WHEN ensembl_id IS NULL THEN gene_name ELSE ensembl_id END",
             tool="schema_align",
-            reason="use symbol as resolve input where Ensembl is missing",
+            # Always include `reason` so that auditors have a little context
+            reason="use symbol as fallback resolution input where Ensembl is missing",
         ),
     ],
 )
