@@ -11,6 +11,7 @@ from pydantic import Field, model_validator
 
 from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.schema import (
+    CrossReferenceField,
     DatasetSchema,
     FeatureBaseSchema,
     ForeignKeyField,
@@ -19,6 +20,7 @@ from homeobox.schema import (
     StableUIDBaseSchema,
     StableUIDField,
     _iter_pointer_annotations,
+    combine_markers,
     make_uid,
 )
 
@@ -120,7 +122,11 @@ class PublicationSchema(StableUIDBaseSchema):
     # The doi for the paper, there is almost always one
     doi: str
     # PubMed id for the paper, there is almost always one
-    pmid: int | None = StableUIDField.declare(default=...)
+    pmid: int | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="pubmed"),
+        default=...,
+    )
     # The title of the paper
     title: str
     # The journal that the paper was published in, if applicable
@@ -253,7 +259,11 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
 
     # Unambiguous accession — stable across naming conventions
     # (e.g. "CM000663.2" for chr1 in GRCh38)
-    genbank_accession: str | None = StableUIDField.declare(default=None)
+    genbank_accession: str | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="genbank"),
+        default=None,
+    )
     refseq_accession: str | None = None
 
     # Whether this sequence is part of the primary assembly,
@@ -269,7 +279,11 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
 
 class ProteinSchema(FeatureBaseSchema):
     # The UniProt accession ID, e.g., "P04637"
-    uniprot_id: str | None = StableUIDField.declare(default=...)
+    uniprot_id: str | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="uniprot"),
+        default=...,
+    )
     # The recommended protein name from UniProt, e.g., "Cellular tumor antigen p53"
     protein_name: str | None
     # The primary gene name encoding this protein, e.g., "TP53"
@@ -302,7 +316,11 @@ class SmallMoleculeSchema(StableUIDBaseSchema):
     # The smiles string for the molecule
     smiles: str | None
     # PubChem CID for the molecule
-    pubchem_cid: int | None = StableUIDField.declare(default=None)
+    pubchem_cid: int | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="pubchem"),
+        default=None,
+    )
     # Standard name for the molecule
     iupac_name: str | None
     inchi_key: str | None
