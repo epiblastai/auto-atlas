@@ -28,6 +28,7 @@ Currently, we support the following file formats (which may be in `.tar` files):
 | Format | Action |
 |--------|--------|
 | `.csv` / `.tsv` / `.parquet` | Tabular data delimited or in a columnar format |
+| `.xlsx` | Excel workbook; may hold several sheets  |
 | `.npy` | Numpy array data |
 | `.zarr` | Zarr array data |
 | `.h5ad` | AnnData |

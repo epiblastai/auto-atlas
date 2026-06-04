@@ -11,6 +11,7 @@ from pydantic import Field, model_validator
 
 from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.schema import (
+    CrossReferenceField,
     DatasetSchema,
     FeatureBaseSchema,
     ForeignKeyField,
@@ -19,6 +20,7 @@ from homeobox.schema import (
     StableUIDBaseSchema,
     StableUIDField,
     _iter_pointer_annotations,
+    combine_markers,
     make_uid,
 )
 
@@ -120,7 +122,11 @@ class PublicationSchema(StableUIDBaseSchema):
     # The doi for the paper, there is almost always one
     doi: str
     # PubMed id for the paper, there is almost always one
-    pmid: int | None = StableUIDField.declare(default=...)
+    pmid: int | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="pubmed"),
+        default=...,
+    )
     # The title of the paper
     title: str
     # The journal that the paper was published in, if applicable
@@ -253,7 +259,11 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
 
     # Unambiguous accession — stable across naming conventions
     # (e.g. "CM000663.2" for chr1 in GRCh38)
-    genbank_accession: str | None = StableUIDField.declare(default=None)
+    genbank_accession: str | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="genbank"),
+        default=None,
+    )
     refseq_accession: str | None = None
 
     # Whether this sequence is part of the primary assembly,
@@ -269,7 +279,11 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
 
 class ProteinSchema(FeatureBaseSchema):
     # The UniProt accession ID, e.g., "P04637"
-    uniprot_id: str | None = StableUIDField.declare(default=...)
+    uniprot_id: str | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="uniprot"),
+        default=...,
+    )
     # The recommended protein name from UniProt, e.g., "Cellular tumor antigen p53"
     protein_name: str | None
     # The primary gene name encoding this protein, e.g., "TP53"
@@ -302,7 +316,11 @@ class SmallMoleculeSchema(StableUIDBaseSchema):
     # The smiles string for the molecule
     smiles: str | None
     # PubChem CID for the molecule
-    pubchem_cid: int | None = StableUIDField.declare(default=None)
+    pubchem_cid: int | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="pubchem"),
+        default=None,
+    )
     # Standard name for the molecule
     iupac_name: str | None
     inchi_key: str | None
@@ -491,10 +509,7 @@ class CellIndex(HoxBaseSchema):
         feature_registry_schema=ImageFeatureSchema,
     )
 
-    # Image tiles don't have a schema because they aren't features!
-    # TODO: For image data we might want to define a concept like "axis annotations"
-    # that are alternatives to the feature registry. Here for example, the axis annotations
-    # would be channel names probably.
+    # Image tiles don't have a feature registry because they aren't features!
     image_tiles: DenseZarrPointer | None = PointerField.declare(feature_space="image_tiles")
 
     # Auto-filled fields
@@ -508,6 +523,7 @@ class CellIndex(HoxBaseSchema):
     # sync automatically by :meth:`generate_has_pointer_flags` (instance
     # writes) and :meth:`compute_auto_fields` (bulk obs DataFrames), mirroring
     # how ``perturbation_search_string`` is derived.
+    # Only create these flag fields when working with more than 1 PointerField
     has_gene_expression: bool = False
     has_chromatin_accessibility: bool = False
     has_protein_abundance: bool = False
@@ -590,40 +606,3 @@ class CellIndex(HoxBaseSchema):
         # programmatically constructed CellIndex instances the flags are set
         # correctly by the generate_has_pointer_flags validator instead.
         return obs_df
-
-
-# ---------------------------------------------------------------------------
-# Dataset-perturbation index (materialized summary)
-# ---------------------------------------------------------------------------
-
-
-class DatasetPerturbationIndex(LanceModel):
-    """Materialized summary linking datasets to their perturbations.
-
-    Built at ingestion time. Enables queries like 'find all datasets
-    where TP53 was perturbed' without scanning CellIndex.
-    """
-
-    dataset_uid: str
-    perturbation_uid: str
-    perturbation_type: PerturbationType
-
-    # Denormalized for search convenience — avoids a join to the
-    # perturbation tables for the most common query patterns
-    intended_gene_name: str | None = None  # for genetic
-    compound_name: str | None = None  # for small molecule
-    agent_name: str | None = None  # for biologic
-
-    # Summary stats
-    cell_count: int | None = None  # how many cells got this perturbation
-    control_cell_count: int | None = None  # how many matched controls
-
-    # Autofilled
-    uid: str = ""
-
-    @model_validator(mode="after")
-    def generate_uid(self) -> Self:
-        # Deterministic short hash of dataset and perturbation uids
-        key = f"{self.dataset_uid}_{self.perturbation_uid}".encode()
-        self.uid = hashlib.blake2b(key, digest_size=8).hexdigest()
-        return self

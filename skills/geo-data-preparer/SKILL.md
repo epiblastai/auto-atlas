@@ -144,7 +144,7 @@ with open("/tmp/geo_agent/<accession>/collection.json", "w") as f:
 
 After `coalesce()`, dataset files live in `root/<dataset_name>/`, shared files in `root/`, and `OTHER` files in `root/other_files/`. The `collection.json` manifest records every file with its tag and feature space and is the source of truth for the steps that follow.
 
-### 6a. Stage obs and var into per-dataset Lance tables
+### 6. Stage obs and var into per-dataset Lance tables
 
 Each dataset's obs- and var-level metadata is loaded into a Lance database at `<dataset_dir>/lance_db/`.
 
@@ -171,10 +171,6 @@ db.create_table("CellIndex_gene_expression", data=obs_df, mode="overwrite")
 var_df = pd.read_csv(var_csv, index_col=0).reset_index(names="var_index")
 db.create_table("GenomicFeatureSchema", data=var_df, mode="overwrite")
 ```
-
-#### 6b. Add fields from metadata
-
-You MAY add columns for metadata found in the GEO metadata json or the publication that is not already present (e.g. organism, cell line, donor), using schema field names. Standardizing the values is delegated to the resolver subagents.
 
 ### 7. Create collection-level informational tables
 
