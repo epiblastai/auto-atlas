@@ -1,13 +1,9 @@
-import hashlib
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     import pandas as pd
-
-from lancedb.pydantic import LanceModel
-from pydantic import Field, model_validator
 
 from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.schema import (
@@ -16,6 +12,7 @@ from homeobox.schema import (
     FeatureBaseSchema,
     ForeignKeyField,
     HoxBaseSchema,
+    OntologyAlignedField,
     PointerField,
     StableUIDBaseSchema,
     StableUIDField,
@@ -23,13 +20,15 @@ from homeobox.schema import (
     combine_markers,
     make_uid,
 )
+from lancedb.pydantic import LanceModel
+from pydantic import Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
 
 
-class FeatureType(str, Enum):
+class FeatureType(StrEnum):
     """The level of resolution a genomic feature represents."""
 
     GENE = "gene"
@@ -39,7 +38,7 @@ class FeatureType(str, Enum):
     OTHER = "other"
 
 
-class GeneticPerturbationType(str, Enum):
+class GeneticPerturbationType(StrEnum):
     """The class of genetic perturbation reagent."""
 
     CRISPR_KO = "CRISPRko"
@@ -52,7 +51,7 @@ class GeneticPerturbationType(str, Enum):
     OTHER = "other"
 
 
-class SequenceRole(str, Enum):
+class SequenceRole(StrEnum):
     """The role of a sequence in a reference genome assembly."""
 
     CHROMOSOME = "chromosome"
@@ -66,7 +65,7 @@ class SequenceRole(str, Enum):
     OTHER = "other"
 
 
-class TargetContext(str, Enum):
+class TargetContext(StrEnum):
     """Where a genetic perturbation reagent lands relative to gene structure."""
 
     EXON = "exon"
@@ -79,7 +78,7 @@ class TargetContext(str, Enum):
     OTHER = "other"
 
 
-class BiologicPerturbationType(str, Enum):
+class BiologicPerturbationType(StrEnum):
     """The class of biologic perturbation agent."""
 
     CYTOKINE = "cytokine"
@@ -91,7 +90,7 @@ class BiologicPerturbationType(str, Enum):
     OTHER = "other"
 
 
-class PerturbationType(str, Enum):
+class PerturbationType(StrEnum):
     SMALL_MOLECULE = "small_molecule"
     GENETIC_PERTURBATION = "genetic_perturbation"
     BIOLOGIC_PERTURBATION = "biologic_perturbation"
@@ -120,11 +119,11 @@ def _build_perturbation_search_string(uids: list[str] | None, types: list[str] |
 
 class PublicationSchema(StableUIDBaseSchema):
     # The doi for the paper, there is almost always one
-    doi: str
+    doi: str = CrossReferenceField.declare(database_name="DOI")
     # PubMed id for the paper, there is almost always one
     pmid: int | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="pubmed"),
+        CrossReferenceField.declare(database_name="PubMed"),
         default=...,
     )
     # The title of the paper
@@ -172,11 +171,11 @@ class DonorSchema(LanceModel):
     uid: str = Field(default_factory=make_uid)
     age_years: float | None = None
     sex: str | None = None
-    ethnicity: str | None = None
+    ethnicity: str | None = OntologyAlignedField.declare(ontology_name="HANCESTRO")
     cause_of_death: str | None = None  # for postmortem tissue
     pmi_hours: float | None = None  # postmortem interval in hours
-    clinical_diagnosis: str | None = None
-    pathological_diagnosis: str | None = None
+    clinical_diagnosis: str | None = OntologyAlignedField.declare(ontology_name="MONDO")
+    pathological_diagnosis: str | None = OntologyAlignedField.declare(ontology_name="MONDO")
 
     # Free-text notes about the donor
     description: str | None = None
@@ -205,7 +204,7 @@ class GenomicFeatureSchema(FeatureBaseSchema):
 
     # The canonical gene this feature maps to, if applicable
     gene_name: str | None
-    ensembl_gene_id: str | None
+    ensembl_gene_id: str | None = CrossReferenceField.declare(database_name="ENSEMBL")
 
     # The specific feature identity.
     # For gene-level features this equals ensembl_gene_id.
@@ -227,7 +226,7 @@ class GenomicFeatureSchema(FeatureBaseSchema):
     ensembl_version: str | None = None
 
     # The organism this feature belongs to, e.g. "human", "mouse"
-    organism: str
+    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
 
     @model_validator(mode="after")
     def validate_feature_type(self) -> Self:
@@ -252,8 +251,7 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
     # The role this sequence plays in the assembly
     sequence_role: str  # one of SequenceRole
 
-    # The organism, e.g. "human", "mouse"
-    organism: str
+    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
     # The genome assembly name, e.g. "GRCh38", "GRCm39"
     assembly: str
 
@@ -261,10 +259,10 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
     # (e.g. "CM000663.2" for chr1 in GRCh38)
     genbank_accession: str | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="genbank"),
+        CrossReferenceField.declare(database_name="GenBank"),
         default=None,
     )
-    refseq_accession: str | None = None
+    refseq_accession: str | None = CrossReferenceField.declare(database_name="RefSeq", default=None)
 
     # Whether this sequence is part of the primary assembly,
     # i.e. the set of sequences most analyses restrict to
@@ -281,15 +279,15 @@ class ProteinSchema(FeatureBaseSchema):
     # The UniProt accession ID, e.g., "P04637"
     uniprot_id: str | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="uniprot"),
+        CrossReferenceField.declare(database_name="UniProt"),
         default=...,
     )
     # The recommended protein name from UniProt, e.g., "Cellular tumor antigen p53"
     protein_name: str | None
     # The primary gene name encoding this protein, e.g., "TP53"
     gene_name: str | None
-    # The organism, e.g., "human", "mouse"
-    organism: str | None
+    # The organism
+    organism: str | None = OntologyAlignedField.declare(ontology_name="NCBITaxon")
     # The amino acid sequence
     sequence: str | None
     # Length of the amino acid sequence
@@ -318,13 +316,13 @@ class SmallMoleculeSchema(StableUIDBaseSchema):
     # PubChem CID for the molecule
     pubchem_cid: int | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="pubchem"),
+        CrossReferenceField.declare(database_name="PubChem"),
         default=None,
     )
     # Standard name for the molecule
     iupac_name: str | None
-    inchi_key: str | None
-    chembl_id: str | None
+    inchi_key: str | None = CrossReferenceField.declare(database_name="InChI")
+    chembl_id: str | None = CrossReferenceField.declare(database_name="ChEMBL")
     # Common name for the molecule
     name: str | None
 
@@ -378,7 +376,7 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
     # A guide near a promoter "targets" a gene by convention, but a guide
     # in an enhancer might affect multiple genes.
     intended_gene_name: str | None = None
-    intended_ensembl_gene_id: str | None = None
+    intended_ensembl_gene_id: str | None = CrossReferenceField.declare(database_name="ENSEMBL")
 
     # Where the guide lands relative to gene structure
     target_context: str | None = None  # one of TargetContext
@@ -417,7 +415,7 @@ class BiologicPerturbationSchema(LanceModel):
     biologic_type: str  # one of BiologicPerturbationType
 
     # Protein identity, if applicable
-    uniprot_id: str | None
+    uniprot_id: str | None = CrossReferenceField.declare(database_name="UniProt")
 
     # Provenance
     vendor: str | None = None
@@ -437,20 +435,20 @@ class BiologicPerturbationSchema(LanceModel):
 
 
 class CellIndex(HoxBaseSchema):
-    # Assay used like Perturb-seq, Cell Painting, snATAC-seq, Drop-seq, etc.
-    assay: str
-    # The organism that the cells in this sample come from, e.g. human, mouse, etc.
-    organism: str
-    # Cell line used, e.g. A549, HeLa, etc. (if applicable), this is distinct from cell type
-    cell_line: str | None
+    # Assay used as EFO
+    assay: str = OntologyAlignedField.declare(ontology_name="EFO")
+    # The organism that the cells in this sample come from
+    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
+    # Cell line used
+    cell_line: str | None = CrossReferenceField.declare(database_name="Cellosaurus")
     # Annotated cell type, does not apply to immortalized cell lines or iPSC-derived cells
     # Generally should only be used for primary cells or well-annotated cell lines like PBMCs
-    cell_type: str | None
+    cell_type: str | None = OntologyAlignedField.declare(ontology_name="CL")
     # Development stage, disease, and tissue only apply to primary cells. For example, `disease`
     # should be null even for a "cancer cell line".
     development_stage: str | None
-    disease: str | None
-    tissue: str | None
+    disease: str | None = OntologyAlignedField.declare(ontology_name="MONDO")
+    tissue: str | None = OntologyAlignedField.declare(ontology_name="UBERON")
     donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
     # Number of days the cells were cultured in vitro before profiling, if applicable.
     days_in_vitro: float | None
@@ -494,11 +492,9 @@ class CellIndex(HoxBaseSchema):
         feature_space="gene_expression",
         feature_registry_schema=GenomicFeatureSchema,
     )
-    chromatin_accessibility: SparseZarrPointer | None = (
-        PointerField.declare(
-            feature_space="chromatin_accessibility",
-            feature_registry_schema=ReferenceSequenceSchema,
-        )
+    chromatin_accessibility: SparseZarrPointer | None = PointerField.declare(
+        feature_space="chromatin_accessibility",
+        feature_registry_schema=ReferenceSequenceSchema,
     )
     protein_abundance: DenseZarrPointer | None = PointerField.declare(
         feature_space="protein_abundance",

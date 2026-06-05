@@ -80,6 +80,7 @@ from auto_atlas.perturbations import (
     parse_combinatorial_perturbations,
 )
 from auto_atlas.proteins import resolve_proteins
+from auto_atlas.registries import CrossReferenceDbRegistry, OntologyRegistry
 from auto_atlas.types import (
     CellLineResolution,
     GeneResolution,
@@ -119,6 +120,8 @@ __all__ = [
     # Reference DB
     "configure_reference_db",
     "get_reference_db",
+    "CrossReferenceDbRegistry",
+    "OntologyRegistry",
     # Genes
     "resolve_genes",
     "detect_organism_from_ensembl_ids",
