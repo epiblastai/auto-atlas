@@ -10,11 +10,14 @@ from auto_atlas.curation.types import (
     CurationOp,
     CurationTransaction,
     DropColumn,
+    ExplodeColumn,
+    MergeColumns,
     OpKind,
     RenameColumn,
     ReplaceValue,
     SetColumn,
     TransactionStatus,
+    WideToLong,
 )
 
 __all__ = [
@@ -27,10 +30,13 @@ __all__ = [
     "CurationOp",
     "CurationTransaction",
     "DropColumn",
+    "ExplodeColumn",
+    "MergeColumns",
     "OpKind",
     "RenameColumn",
     "ReplaceValue",
     "SetColumn",
     "TransactionStatus",
+    "WideToLong",
     "default_audit_db_path",
 ]

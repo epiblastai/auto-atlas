@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from auto_atlas.curation.types import ReplaceValue
+from auto_atlas.curation.types import MergeColumns, ReplaceValue
 
 
 def _values_equal(a: Any, b: Any) -> bool:
@@ -166,6 +166,58 @@ class ResolutionReport:
                 best[key] = candidate
 
         return list(best.values())
+
+    def propose_keyed_columns(
+        self,
+        key_values: list[Any],
+        *,
+        key_column: str,
+        field_to_column: dict[str, str],
+        reason: str,
+        anchor_column: str | None = None,
+    ) -> MergeColumns | None:
+        """Build one keyed merge that fans this report out across many columns.
+
+        Where :meth:`propose_column_replacements` rewrites a single column in
+        place, this drives the many correlated fields of one resolution (e.g. a
+        guide RNA's coordinates, strand, intended gene, and context) into several
+        *different* target columns at once, keyed on the column that was resolved.
+
+        ``key_values`` are the distinct values that were resolved (same order as
+        :attr:`results`, exactly as for :meth:`propose_column_replacements`).
+        ``field_to_column`` maps a :class:`Resolution` attribute to the target
+        column it fills (e.g. ``{"target_start": "target_start", "chromosome":
+        "target_chromosome"}``). Returns a single :class:`MergeColumns` op, or
+        ``None`` when nothing resolved.
+
+        One row is emitted per key that resolved at least one mapped field; a key
+        that resolved nothing is skipped (its target rows stay null). Provenance
+        is batch-level: the per-key mapping lives in the op's ``rows``.
+        """
+        if len(key_values) != len(self.results):
+            raise ValueError(
+                f"key_values length ({len(key_values)}) must match "
+                f"report.results length ({len(self.results)})"
+            )
+
+        rows: list[dict[str, Any]] = []
+        for key, resolution in zip(key_values, self.results, strict=True):
+            mapped = {col: getattr(resolution, field) for field, col in field_to_column.items()}
+            if all(value is None for value in mapped.values()):
+                continue
+            rows.append({key_column: key, **mapped})
+
+        if not rows:
+            return None
+
+        anchor = anchor_column or next(iter(field_to_column.values()))
+        return MergeColumns(
+            column=anchor,
+            key_column=key_column,
+            rows=rows,
+            tool=self.tool,
+            reason=reason,
+        )
 
     def to_dataframe(self) -> pd.DataFrame:
         rows = []

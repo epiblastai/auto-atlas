@@ -362,11 +362,8 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
 
     # genbank_accession code for the chromosome where the guide is targeting,
     # e.g. "CM000663.2" for chr1 in GRCh38
-    target_chromosome: str | None = ForeignKeyField.declare(
-        target_schema=ReferenceSequenceSchema,
-        target_field="genbank_accession",
-        default=None,
-    )
+    target_chromosome: str | None = CrossReferenceField.declare(database_name="GenBank")
+
     # Genomic target coordinates — where the reagent physically acts
     target_start: int | None = None
     target_end: int | None = None

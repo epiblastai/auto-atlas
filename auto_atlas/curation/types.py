@@ -27,6 +27,20 @@ class OpKind(StrEnum):
     RENAME_COLUMN = "rename_column"  # rename a column (e.g. raw name -> schema field)
     DROP_COLUMN = "drop_column"  # remove a column (e.g. non-schema raw columns)
     CAST_COLUMN = "cast_column"  # change a column's data type
+    MERGE_COLUMNS = "merge_columns"  # fill many columns from a keyed resolution batch
+
+    # The ops below are mechanical reshapes, not resolution/curation decisions:
+    # they restructure the table (multiplying rows) but record no per-cell
+    # provenance worth auditing the way a resolution does -- their audit value is
+    # mostly reproducibility, which Lance versioning already provides. They are
+    # included only because splitting combinatorial perturbations into one record
+    # per row is common and well-defined. WARNING: this is exactly where the
+    # CurationOp framework risks becoming a worse reimplementation of a dataframe
+    # library (pandas/polars). If we find ourselves reaching for a another reshape
+    # op, stop and reconsider whether CurationOps is the right abstraction for
+    # structural transforms at all, rather than enumerating the long tail here.
+    EXPLODE_COLUMN = "explode_column"  # split a delimited cell into multiple rows
+    WIDE_TO_LONG = "wide_to_long"  # melt parallel column families into multiple rows
 
 
 @dataclass(kw_only=True)
@@ -124,6 +138,111 @@ class CastColumn(CurationOp):
 
     # Serialized Arrow type alias (e.g. "int64", "double", "string", "bool").
     data_type: str
+
+
+@dataclass(kw_only=True)
+class MergeColumns(CurationOp):
+    """Fill many columns at once from a keyed resolution batch (update-only).
+
+    One expensive resolver call (e.g. ``resolve_guide_sequences``) yields many
+    correlated fields per input value, destined for several different schema
+    columns. This op applies them in a single keyed join: ``rows`` is the source
+    table (one dict per *distinct resolved* key), and rows in the target table
+    whose ``key_column`` matches have the remaining columns updated. Unmatched
+    target rows are left untouched; no rows are inserted or deleted.
+
+    ``rows`` keys are column names; every row carries ``key_column`` plus the
+    target columns to fill. The target columns must already exist (add them with
+    ``AddColumn`` first if needed). Provenance here is batch-level -- one op for
+    the whole fan-out -- rather than per-value like :class:`ReplaceValue`; the
+    per-key mapping is preserved in ``rows``. ``column`` is required by the base
+    op and used only as an audit anchor; set it to a representative target column.
+
+    Note: the underlying merge reorders rows (matched rows are rewritten at the
+    end). It is row-count preserving and reversible via the Lance version, but
+    do not rely on row order across it.
+    """
+
+    kind: ClassVar[OpKind] = OpKind.MERGE_COLUMNS
+
+    # Join key column, present in both the target table and every source row.
+    key_column: str
+    # Source records: one dict per distinct key, each with key_column + targets.
+    rows: list[dict[str, Any]]
+
+
+# --- Row-multiplying (shape-changing) ops -----------------------------------
+#
+# Unlike every op above, these change the table's row count: one input row
+# becomes many. They reshape wide -> long ("normalize to one record per row"),
+# differing only in where the multiplicity is encoded -- inside a single
+# delimited cell (ExplodeColumn) or across parallel column families
+# (WideToLong). They cannot be expressed as a per-row SQL update, so the
+# applicator runs them as a whole-table rewrite. Run a reshape as its own
+# transaction, before any value resolution: row-matched ops like ReplaceValue
+# match on values in the pre-reshape shape and must not share a transaction
+# with a reshape.
+
+
+@dataclass(kw_only=True)
+class ExplodeColumn(CurationOp):
+    """Split a delimited cell into multiple rows, repeating the other columns.
+
+    Each value in ``column`` is split on ``delimiter`` (a regular expression);
+    the row is replicated once per fragment, with ``column`` holding the
+    individual fragment. Non-string cells (e.g. nulls) pass through as a single
+    fragment. Use for combinatorial perturbations encoded in one cell
+    (``"guideA|guideB"`` -> two rows).
+    """
+
+    kind: ClassVar[OpKind] = OpKind.EXPLODE_COLUMN
+
+    # Regex delimiter the cell is split on (e.g. r"\s*[+&;|,]\s*").
+    delimiter: str
+    # Optional new column recording each fragment's 0-based position in its
+    # original cell (provenance for the split).
+    position_column: str | None = None
+    # Drop empty fragments produced by the split (e.g. trailing delimiters).
+    drop_empty: bool = True
+
+
+@dataclass(kw_only=True)
+class WideToLong(CurationOp):
+    """Melt parallel column families into multiple rows (wide -> long).
+
+    Each entry in ``groups`` maps an output column name to the list of source
+    columns that feed it, one per slot, aligned by index with ``slot_labels``.
+    Every other (unconsumed) column is treated as an id column and repeated for
+    each slot. One input row becomes ``len(slot_labels)`` rows.
+
+    Example (dual-guide pairs -> one guide per row)::
+
+        WideToLong(
+            column="targeting_sequence",  # representative output; audit anchor
+            groups={
+                "sgID": ["sgID_A", "sgID_B"],
+                "targeting_sequence": ["targeting sequence A", "targeting sequence B"],
+            },
+            slot_labels=["A", "B"],
+            slot_label_column="guide_slot",
+            tool="schema_align",
+            reason="dual-guide pairs -> one guide per row",
+        )
+
+    ``column`` is required by the base op and used purely as an audit anchor;
+    set it to the most representative output column.
+    """
+
+    kind: ClassVar[OpKind] = OpKind.WIDE_TO_LONG
+
+    # Output column -> source columns (one per slot), aligned with slot_labels.
+    groups: dict[str, list[str]]
+    # Label for each slot; length must equal each group's source-list length.
+    slot_labels: list[str]
+    # Optional new column recording which slot each long row came from.
+    slot_label_column: str | None = None
+    # Drop a produced row whose every output column is null (an absent slot).
+    drop_null_slots: bool = True
 
 
 @dataclass

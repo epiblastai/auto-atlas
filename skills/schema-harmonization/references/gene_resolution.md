@@ -12,10 +12,7 @@ This reference is designed to guide you through the specific resolution consider
 
 ## Resolution Strategy
 
-All resolved columns follow the same principle: **never NaN unless there is genuinely no value**, and **always flag resolution status with a boolean `resolved` column.**
-
-1. **Resolution succeeds** (`confidence >= 0.5`, `resolved_value` is not None) → use the canonical value from `GeneResolution` (e.g., `.symbol`, `.ensembl_gene_id`). Set `resolved=True`.
-2. **NaN only when no value exists** — e.g., a gene has no symbol at all.
+When resolution succeeds (`confidence >= 0.5`, `resolved_value` is not None), use the canonical value from `GeneResolution` (e.g., `.symbol`, `.ensembl_gene_id`).
 
 ## Rules
 

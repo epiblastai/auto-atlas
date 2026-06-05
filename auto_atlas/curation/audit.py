@@ -14,11 +14,14 @@ from auto_atlas.curation.types import (
     CurationOp,
     CurationTransaction,
     DropColumn,
+    ExplodeColumn,
+    MergeColumns,
     OpKind,
     RenameColumn,
     ReplaceValue,
     SetColumn,
     TransactionStatus,
+    WideToLong,
 )
 
 _SCHEMA = """
@@ -49,6 +52,10 @@ CREATE TABLE IF NOT EXISTS curation_changes (
     value_sql           TEXT,
     data_type           TEXT,
 
+    -- JSON payload for ops whose parameters don't fit the columns above
+    -- (e.g. the groups/slot_labels of a wide_to_long reshape)
+    payload_json        TEXT,
+
     -- provenance (all ops)
     tool                TEXT NOT NULL,
     reason              TEXT,
@@ -74,6 +81,26 @@ def _stored_new_value(change: CurationOp) -> Any:
         return change.new_value
     if isinstance(change, AddColumn):
         return change.value
+    return None
+
+
+def _op_payload(change: CurationOp) -> dict[str, Any] | None:
+    """Structured parameters for ops that don't fit the fixed audit columns."""
+    if isinstance(change, ExplodeColumn):
+        return {
+            "delimiter": change.delimiter,
+            "position_column": change.position_column,
+            "drop_empty": change.drop_empty,
+        }
+    if isinstance(change, WideToLong):
+        return {
+            "groups": change.groups,
+            "slot_labels": change.slot_labels,
+            "slot_label_column": change.slot_label_column,
+            "drop_null_slots": change.drop_null_slots,
+        }
+    if isinstance(change, MergeColumns):
+        return {"key_column": change.key_column, "rows": change.rows}
     return None
 
 
@@ -107,6 +134,26 @@ def _row_to_op(row: Any) -> CurationOp:
         return DropColumn(**shared)
     if kind is OpKind.CAST_COLUMN:
         return CastColumn(data_type=row["data_type"], **shared)
+    if kind is OpKind.EXPLODE_COLUMN:
+        payload = json.loads(row["payload_json"])
+        return ExplodeColumn(
+            delimiter=payload["delimiter"],
+            position_column=payload["position_column"],
+            drop_empty=payload["drop_empty"],
+            **shared,
+        )
+    if kind is OpKind.WIDE_TO_LONG:
+        payload = json.loads(row["payload_json"])
+        return WideToLong(
+            groups=payload["groups"],
+            slot_labels=payload["slot_labels"],
+            slot_label_column=payload["slot_label_column"],
+            drop_null_slots=payload["drop_null_slots"],
+            **shared,
+        )
+    if kind is OpKind.MERGE_COLUMNS:
+        payload = json.loads(row["payload_json"])
+        return MergeColumns(key_column=payload["key_column"], rows=payload["rows"], **shared)
     raise ValueError(f"Unknown op_kind: {row['op_kind']}")
 
 
@@ -168,9 +215,10 @@ class CurationAuditStore:
                 INSERT INTO curation_changes (
                     transaction_id, table_name, op_kind, column_name,
                     old_value, new_value, target_column, value_sql, data_type,
+                    payload_json,
                     tool, reason, confidence, source, alternatives_json, input_value,
                     rows_updated, lance_version, apply_order
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     transaction.transaction_id,
@@ -182,6 +230,7 @@ class CurationAuditStore:
                     getattr(change, "new_name", None),
                     getattr(change, "value_sql", None),
                     getattr(change, "data_type", None),
+                    json.dumps(_op_payload(change)) if _op_payload(change) else None,
                     change.tool,
                     change.reason,
                     change.confidence,
