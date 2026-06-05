@@ -14,11 +14,13 @@ from auto_atlas.curation import (
     CurationOp,
     CurationTransaction,
     DropColumn,
+    ExplodeColumn,
     OpKind,
     RenameColumn,
     ReplaceValue,
     SetColumn,
     TransactionStatus,
+    WideToLong,
     default_audit_db_path,
 )
 from auto_atlas.genes import (
@@ -102,11 +104,13 @@ __all__ = [
     "CurationOp",
     "CurationTransaction",
     "DropColumn",
+    "ExplodeColumn",
     "OpKind",
     "RenameColumn",
     "ReplaceValue",
     "SetColumn",
     "TransactionStatus",
+    "WideToLong",
     "default_audit_db_path",
     # Types
     "Resolution",
