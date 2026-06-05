@@ -121,9 +121,7 @@ class CurationApplicator:
             status = TransactionStatus.APPLIED
         except Exception as exc:
             error = str(exc)
-            status = (
-                TransactionStatus.PARTIAL if applied_changes else TransactionStatus.FAILED
-            )
+            status = TransactionStatus.PARTIAL if applied_changes else TransactionStatus.FAILED
 
         self._audit.finalize_transaction(
             transaction.transaction_id,

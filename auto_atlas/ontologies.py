@@ -17,6 +17,7 @@ from collections import defaultdict
 from enum import Enum
 
 import polars as pl
+from homeobox.util import sql_escape
 
 from auto_atlas.metadata_table import (
     CELL_LINE_SYNONYMS_TABLE,
@@ -25,7 +26,6 @@ from auto_atlas.metadata_table import (
     get_reference_db,
 )
 from auto_atlas.types import CellLineResolution, OntologyResolution, ResolutionReport
-from auto_atlas.util import sql_escape
 
 
 class OntologyEntity(str, Enum):

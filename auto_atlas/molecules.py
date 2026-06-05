@@ -14,6 +14,7 @@ from typing import Literal
 
 import polars as pl
 import requests
+from homeobox.util import sql_escape
 
 from auto_atlas._rate_limit import rate_limited
 from auto_atlas.metadata_table import (
@@ -23,7 +24,6 @@ from auto_atlas.metadata_table import (
 )
 from auto_atlas.perturbations import _CHEMICAL_NEGATIVE_CONTROLS
 from auto_atlas.types import MoleculeResolution, ResolutionReport
-from auto_atlas.util import sql_escape
 
 # Salt suffixes to strip from compound names
 _SALT_SUFFIXES = re.compile(

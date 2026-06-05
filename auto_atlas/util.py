@@ -3,11 +3,6 @@
 import os
 
 
-def sql_escape(s: str) -> str:
-    """Escape single quotes for LanceDB SQL string literals."""
-    return s.replace("'", "''")
-
-
 def extract_h5ad_obs_var(h5ad_path: str) -> tuple[str, str]:
     """Write the obs and var dataframes of an h5ad file to separate CSV files.
 

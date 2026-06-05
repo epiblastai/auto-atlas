@@ -62,6 +62,21 @@ Pass `--input-type` (resolver-specific, e.g. `symbol`/`ensembl_id` for `resolve_
 
 See **references/auditable_curation.md** for the applicator API (imports, `ApplyResult`, `allowed_columns` semantics, `propose_column_replacements`) and the general constraints of the resolution script.
 
+## Filling nullable fields
+
+A nullable schema field (`... | None`) describes what the value *may* be, not permission to skip it. **Leave a field null only when the value genuinely does not exist or cannot be recovered** — never as a shortcut to avoid looking.
+
+Before leaving any field null:
+
+1. **Exhaust the data package.** The value may live in another raw column of the same table, a sibling file (e.g. dataset/collection metadata or publication), or be derivable from a resolver.
+2. **Infer when it is unambiguous.** Constants implied by the dataset are fair game — e.g. a single-cell-line human dataset implies `organism = "Homo sapiens"`.
+3. **Ask the user** when a field is meaningful, knowable, but not present anywhere you can reach (e.g. assay, perturbation library, Ensembl release). Surface exactly which field and why you cannot fill it rather than silently nulling it.
+4. **Only then leave it null**, and say so — note which fields you left null and why.
+
+This is stricter than the value-resolution rule below: it covers every field including ones with no resolver.
+
+**Out of scope: automatically generated columns.** Do not populate `uid`, `dataset_uid`, or other auto-generated/derived columns. These are deterministic functions of the data and schema — no decision or source to record — so they do not need to be covered in the audit trail. A downstream finalization step will assign them and validate the table exactly matches the schema. Harmonization stops at aligning columns and resolving values.
+
 ## Resolving values
 
 Resolution maps raw values to canonical identifiers per domain. Shared principles: **never NaN unless there is genuinely no value**, and **flag resolution status** (e.g. a boolean `resolved` column). Per-domain references hold the specific considerations and worked examples:

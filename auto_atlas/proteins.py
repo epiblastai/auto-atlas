@@ -5,6 +5,7 @@ UniProt IDs using the proteins and protein_aliases tables.
 """
 
 import polars as pl
+from homeobox.util import sql_escape
 
 from auto_atlas.genes import _get_organism_record
 from auto_atlas.metadata_table import (
@@ -13,7 +14,6 @@ from auto_atlas.metadata_table import (
     get_reference_db,
 )
 from auto_atlas.types import ProteinResolution, ResolutionReport
-from auto_atlas.util import sql_escape
 
 
 def _batch_lookup_proteins(uniprot_ids: list[str]) -> dict[str, dict]:

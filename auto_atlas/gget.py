@@ -46,9 +46,7 @@ def _blat_guide(sequence: str, assembly: str) -> pd.DataFrame | None:
     try:
         import gget
     except ImportError:
-        raise ImportError(
-            "gget is required for guide RNA resolution."
-        ) from None
+        raise ImportError("gget is required for guide RNA resolution.") from None
 
     result = gget.blat(sequence, assembly=assembly)
     if result is None or (isinstance(result, pd.DataFrame) and result.empty):
