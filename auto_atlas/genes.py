@@ -19,7 +19,7 @@ from auto_atlas.metadata_table import (
     get_reference_db,
 )
 from auto_atlas.types import GeneResolution, ResolutionReport
-from auto_atlas.util import sql_escape
+from homeobox.util import sql_escape
 
 _ENSEMBL_ID_RE = re.compile(r"^ENS[A-Z]*G\d+(\.\d+)?$")
 

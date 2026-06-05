@@ -6,7 +6,7 @@ from typing import Any
 
 import pyarrow as pa
 
-from auto_atlas.util import sql_escape
+from homeobox.util import sql_escape
 
 
 def format_sql_literal(value: Any, field_type: pa.DataType) -> str:
