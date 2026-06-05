@@ -81,7 +81,7 @@ This is stricter than the value-resolution rule below: it covers every field inc
 
 ## Resolving values
 
-Resolution maps raw values to canonical identifiers per domain. Shared principles: **never NaN unless there is genuinely no value**, and **flag resolution status** (e.g. a boolean `resolved` column). Per-domain references hold the specific considerations and worked examples:
+Resolution maps raw values to canonical identifiers per domain. Per-domain references hold the specific considerations and worked examples:
 
 - **references/gene_resolution.md** — gene symbols and Ensembl IDs (var-level), with a full worked example.
 - Other domains (ontology terms, proteins, molecules, genetic perturbation targets) follow the same pattern in their own references under `references/`.
