@@ -213,7 +213,8 @@ class Collection:
             self._coalesced_datasets.add(name)
 
         pending = [
-            tf for path, tf in self._shared_tagged_files.items()
+            tf
+            for path, tf in self._shared_tagged_files.items()
             if path not in self._coalesced_files
         ]
         groups = (
@@ -247,9 +248,7 @@ class Collection:
         payload = {
             "root_dir": self.root_dir,
             "shared_files": [tf.to_dict() for tf in self._shared_tagged_files.values()],
-            "datasets": {
-                name: dataset._to_dict() for name, dataset in self._datasets.items()
-            },
+            "datasets": {name: dataset._to_dict() for name, dataset in self._datasets.items()},
         }
         return json.dumps(payload, indent=2)
 

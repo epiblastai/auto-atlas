@@ -7,6 +7,8 @@ instantly; cache misses go through BLAT and are saved for future reuse.
 
 import logging
 
+from homeobox.util import sql_escape
+
 from auto_atlas.gget import _ASSEMBLY_MAP, _SPECIES_MAP, _resolve_single
 from auto_atlas.metadata_table import (
     GUIDE_RNAS_TABLE,
@@ -14,7 +16,6 @@ from auto_atlas.metadata_table import (
     get_reference_db,
 )
 from auto_atlas.types import GuideRnaResolution, ResolutionReport
-from homeobox.util import sql_escape
 
 logger = logging.getLogger(__name__)
 

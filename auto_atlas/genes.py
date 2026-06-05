@@ -9,9 +9,8 @@ import re
 from typing import Literal
 
 import polars as pl
-import requests
+from homeobox.util import sql_escape
 
-from auto_atlas._rate_limit import rate_limited
 from auto_atlas.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
     GENOMIC_FEATURES_TABLE,
@@ -19,7 +18,6 @@ from auto_atlas.metadata_table import (
     get_reference_db,
 )
 from auto_atlas.types import GeneResolution, ResolutionReport
-from homeobox.util import sql_escape
 
 _ENSEMBL_ID_RE = re.compile(r"^ENS[A-Z]*G\d+(\.\d+)?$")
 

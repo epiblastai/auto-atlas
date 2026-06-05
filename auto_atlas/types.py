@@ -24,6 +24,7 @@ def _values_equal(a: Any, b: Any) -> bool:
 @dataclass
 class Resolution:
     """Base result for any single resolution attempt."""
+
     input_value: str
     resolved_value: str | None  # Canonical form, or None if failed
     confidence: float  # 1.0 = exact, 0.0 = failed
