@@ -145,7 +145,13 @@ class Collection:
             collection._coalesced_files.add(f["path"])
 
         for name, dataset_payload in payload.get("datasets", {}).items():
-            dataset = Dataset(name, uid=dataset_payload.get("dataset_uid"))
+            uid = dataset_payload.get("dataset_uid")
+            if uid is None:
+                raise ValueError(
+                    f"Dataset {name!r} in {path} has no dataset_uid; the manifest "
+                    "is wrong. Regenerate it (Collection.to_json)."
+                )
+            dataset = Dataset(name, uid=uid)
             for f in dataset_payload["files"]:
                 dataset.add_file(f["path"], FileTypeTag(f["tag"]), f["feature_space"])
             collection.add_dataset(dataset)
