@@ -4,6 +4,8 @@ import shutil
 from dataclasses import dataclass
 from enum import StrEnum
 
+from homeobox.schema import make_uid
+
 
 class FileTypeTag(StrEnum):
     # Use this tag for files that contain row-level metadata
@@ -39,8 +41,12 @@ class TaggedFile:
 
 
 class Dataset:
-    def __init__(self, dataset_name: str) -> None:
+    def __init__(self, dataset_name: str, uid: str | None = None) -> None:
         self.dataset_name = dataset_name
+        # Stable logical identifier for this dataset, referenced by
+        # HoxBaseSchema.dataset_uid on every obs row that belongs to it. Assigned
+        # once on creation and preserved across JSON round-trips; never changes.
+        self.uid = uid or make_uid()
         self._tagged_files: dict[str, TaggedFile] = {}
 
     @property
@@ -86,7 +92,10 @@ class Dataset:
         self._tagged_files[new_path] = TaggedFile(new_path, tf.tag, tf.feature_space)
 
     def _to_dict(self) -> dict:
-        return {"files": [tf.to_dict() for tf in self._tagged_files.values()]}
+        return {
+            "dataset_uid": self.uid,
+            "files": [tf.to_dict() for tf in self._tagged_files.values()],
+        }
 
 
 class Collection:
@@ -136,7 +145,7 @@ class Collection:
             collection._coalesced_files.add(f["path"])
 
         for name, dataset_payload in payload.get("datasets", {}).items():
-            dataset = Dataset(name)
+            dataset = Dataset(name, uid=dataset_payload.get("dataset_uid"))
             for f in dataset_payload["files"]:
                 dataset.add_file(f["path"], FileTypeTag(f["tag"]), f["feature_space"])
             collection.add_dataset(dataset)
