@@ -27,8 +27,7 @@ This reference is designed to guide you through the specific resolution consider
 ## Rules
 
 - **Organism as scientific name.** Resolve common organism names to scientific names with `resolve_organisms()` rather than hardcoding mappings, and pass the organism through to the gene and guide resolvers.
-<!--- I don't believe there's an auditable operation that can do row splitting yet. It's especially challenging because it requires changing the shape of the table with repeated values when a row is split. -->
-- **One perturbation per row.** Each accession-level row must represent exactly one reagent/target. Combinatorial perturbations encoded in a single row (e.g. `guideA|guideB`) must be split into multiple rows before resolution.
+- **One perturbation per row.** Each accession-level row must represent exactly one reagent/target. Combinatorial perturbations — combinations packed into one delimited cell, or spread across parallel column families (`guide_A`/`guide_B`) — must be split into one row per reagent **before** resolution, using the reshape ops below.
 - **Controls are not perturbations.** Use the control-detection helpers to identify control rows. If it's non-targeting, intergenic, or another control type their genetic target, if a field in the schema, should be null.
 - **Missing ≠ control.** A null or empty target does not imply a negative control.
 - **Don't guess required guide-level fields.** If the schema requires a guide sequence, coordinates, or strand and the data lacks them, stop and ask the user rather than fabricating values unless the user explicitly approves nulls.
@@ -67,7 +66,7 @@ Each returns a `ResolutionReport` (`total`, `resolved`, `unresolved`, `ambiguous
 
 **Only `resolve_genes` and `resolve_guide_sequences` are registered with `apply_resolution_pass.py`.** `annotate_genomic_coordinates` is a custom Python step.
 
-**Applying resolver output — the single-field caveat.** `resolve_genes` maps cleanly onto the script: one canonical field, one `--resolution-field-name`, one `ReplaceValue` pass (exactly as in **references/gene_resolution.md**). Guide and coordinate resolution instead produce **many correlated fields from one expensive, rate-limited call**, so driving the script once per field would re-run BLAT each time. Prefer a **custom transaction**: call the resolver once on the distinct guides, then build a multi-column `SetColumn`/`AddColumn` transaction from the single `ResolutionReport`. See **references/auditable_curation.md**.
+**Applying resolver output — the single-field caveat.** `resolve_genes` maps cleanly onto the script: one canonical field, one `--resolution-field-name`, one `ReplaceValue` pass (exactly as in **references/gene_resolution.md**). Guide and coordinate resolution instead produce **many correlated fields from one expensive, rate-limited call**, so driving the single-column script once per field would re-run BLAT each time. Use **fan-out** instead — resolve the distinct guides once and write every field in a single keyed `MergeColumns` merge, either via the script's `--fanout` mode or `ResolutionReport.propose_keyed_columns` in a custom transaction. See the fan-out section of **references/auditable_curation.md**.
 
 ```python
 # Resolve by guide RNA sequence — dedupe first, BLAT is rate-limited
@@ -115,6 +114,37 @@ seq.ucsc_name          # "chr1"
 seq.sequence_name      # "1"
 ```
 
+## Splitting combinatorial perturbations into rows
+
+Two auditable **reshape ops** split one row into many so each output row holds exactly one reagent. They are *mechanical* reshapes, not value resolutions — a whole-table rewrite with no per-cell resolution decision — so they carry only reproducibility provenance (Lance versioning already gives undo). Run a reshape as **its own transaction, before** any resolution pass, since it changes the table's row count and the downstream ops then act per reagent. Import both from `auto_atlas`.
+
+| Op | Splits | Key fields |
+|----|--------|------------|
+| `ExplodeColumn` | one delimited cell → one row per fragment, repeating all other columns | `column`, `delimiter` (regex), `position_column` (optional — records each fragment's 0-based index), `drop_empty` |
+| `WideToLong` | parallel column **families** (`_A`/`_B`) → one row per slot, repeating the shared id columns | `groups` (`{output_column: [source_per_slot]}`), `slot_labels` (one per slot), `slot_label_column` (optional — records which slot a row came from), `drop_null_slots` |
+
+```python
+# Combinations packed into one cell: "GENE1|GENE2" -> two rows
+ExplodeColumn(column="target", delimiter=r"\|", tool="schema_align",
+              reason="split combinatorial targets into one per row")
+
+# Dual-guide families -> one guide per row. groups names the OUTPUT columns;
+# the source family columns are consumed, the id columns are repeated.
+WideToLong(
+    column="targeting sequence A",   # audit anchor (a representative source column)
+    groups={
+        "guide_sequence": ["targeting sequence A", "targeting sequence B"],
+        "reagent_id": ["sgID_A", "sgID_B"],
+    },
+    slot_labels=["A", "B"],          # len must match each group's source list
+    drop_null_slots=True,            # drop a slot's row when all its outputs are null
+    tool="schema_align",
+    reason="dual-guide pair -> one reagent (guide) per row",
+)
+```
+
+Because a reshape rewrites the table, give it `allowed_columns` covering the **output** columns (`guide_sequence`, `reagent_id` above) and apply it alone. **These are the only structural-reshape ops** — for anything more elaborate than splitting rows, reach for explicit per-row `SetColumn` expressions rather than expecting more reshape primitives.
+
 ## Sourcing fields
 
 Where a field can come from more than one place, prefer the most authoritative source and fall back in order:
@@ -126,6 +156,35 @@ Where a field can come from more than one place, prefer the most authoritative s
 - **Cross-reference (UID / foreign-key) fields** that point at a record in another table — populate only when the target can be mapped unambiguously to a record already available to the workflow; otherwise leave null and justify it in the report.
 - **Perturbation-modality fields** — the technique is sometimes in a library file and sometimes only in collection-level metadata such as the publication; normalize whatever string you find with `classify_perturbation_method()`.
 
-## Worked example: combinatorial genetic perturbation library
+## Worked example: dual-guide CRISPRi library
 
-> _TODO: worked example pending the row-splitting operation discussed above — combinatorial reagents need an auditable op that can change table shape (split one row into many with repeated values). To be written once that op exists._
+Raw table stores one **guide pair** per row: shared `gene` / `ensembl gene id`, two parallel guide families (`targeting sequence A`/`B`, `sgID_A`/`B`), and some QC columns. A subset of rows are `non-targeting` controls. Target schema is `GeneticPerturbationSchema` (one reagent per row: `perturbation_type`, `guide_sequence`, `target_chromosome`/`start`/`end`/`strand`, `intended_gene_name`/`intended_ensembl_gene_id`, `target_context`, `library_name`, `reagent_id`).
+
+Sequence the work as three transactions — reshape, then align, then resolve:
+
+| Phase | What to do |
+|-------|------------|
+| Reshape | `WideToLong` (own transaction) melting `targeting sequence A`/`B` → `guide_sequence` and `sgID_A`/`B` → `reagent_id`. One pair becomes two guide rows; shared columns repeat. |
+| Align + constants | Rename the library's own annotation columns (`gene` → `intended_gene_name`, `ensembl gene id` → `intended_ensembl_gene_id`) — design intent, so keep it rather than overwriting from BLAT. `AddColumn` the constants implied by the screen: `perturbation_type="CRISPRi"`, `library_name=<first author + year>`. |
+| Resolve guides (fan-out) | Resolve the distinct `guide_sequence` once via BLAT and `--fanout` into `target_start`/`target_end`/`target_strand` and `target_context`. Control guides resolve nothing, so their target rows stay null automatically. |
+
+```bash
+# Phase 3, after the reshape + align transactions are applied
+python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+  <path/to/lance_db> \
+  --table GeneticPerturbationSchema \
+  --tool resolve_guide_sequences --fanout \
+  --key-column guide_sequence \
+  --map target_start:target_start --map target_end:target_end \
+  --map target_strand:target_strand --map target_context:target_context \
+  --reason "resolve dual-guide CRISPRi targets via BLAT" \
+  --organism human
+```
+
+Notes that generalize:
+
+- **BLAT is the assembly-safe source for coordinates.** Library `sgID`s often encode a position, but in the design assembly (commonly hg19) — putting those numbers in a GRCh38 schema is silently wrong. Re-resolving guides via BLAT lands every field in one assembly. Only parse coordinates out of identifiers when you have confirmed the assembly matches the schema.
+- **Drop the leftovers at finalization.** Raw QC and pair-id columns that map to no schema field (`unique sgRNA pair ID`, `transcript`, duplicate-flag columns) are removed by `DropColumn` in the finalization step, not during alignment.
+- **Controls are not perturbations.** `non-targeting` rows are excluded from the fan-out's resolution rows, so their `target_*` columns stay null; their `intended_gene_name`/`intended_ensembl_gene_id` carried the literal `"non-targeting"` from the raw column and should be nulled (a `ReplaceValue` on those columns). Use `detect_negative_control_type()` to populate a control-type field if the schema has one.
+- **Dedupe before BLAT.** The fan-out resolves the distinct guide set; duplicate guides across rows are all updated by the keyed merge.
+- **Keep the library's gene annotation.** `resolve_guide_sequences` also returns `intended_gene_name`/`intended_ensembl_gene_id` from genomic overlap; do **not** map those into the fan-out when the library already annotated design intent — overlap is a re-derivation, the library column is the intent.

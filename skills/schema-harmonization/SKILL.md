@@ -32,12 +32,15 @@ All harmonization mutates staged Lance tables through audited transactions:
 | `RenameColumn` | Rename a raw column toward a schema field (`column` → `new_name`). |
 | `DropColumn` | Remove a non-schema column during finalization. |
 | `CastColumn` | Coerce a column to a schema type (`data_type` Arrow alias, e.g. `"string"`, `"int64"`). |
+| `MergeColumns` | Fill **many** columns at once from a keyed resolution batch (update-only `merge_insert`). The fan-out counterpart to `ReplaceValue`, for multi-field resolvers. See **references/auditable_curation.md**. |
+
+Two further **row-multiplying reshape ops** (`ExplodeColumn`, `WideToLong`) split one row into many — for combinatorial perturbations encoded in a single cell or across parallel column families. They are mechanical reshapes (a whole-table rewrite, their own transaction), not value resolutions; they live in **references/genetic_perturbation_resolution.md** where they are most often needed.
 
 Every op requires `column` and `tool`. Also set provenance when you have it: `reason`, `confidence`, `source`, `alternatives`, `input_value`. Ops in a transaction run **in order**, so later ops can depend on earlier ones (e.g. `AddColumn` then `SetColumn` on that column). Validation runs up front against the simulated post-op schema; nothing is written if it fails.
 
 ## Apply workflow
 
-**Script vs custom code** — Use `scripts/apply_resolution_pass.py` when a single column's distinct values can be resolved and written back in place. Use custom Python (still through `CurationApplicator`) for everything else: renaming raw columns, building staging columns with `value_sql`, copying across columns with `CASE`/`COALESCE`, or driving one `ResolutionReport` into multiple schema fields.
+**Script vs custom code** — Use `scripts/apply_resolution_pass.py` when a single column's distinct values can be resolved and written back in place (default mode), or when one multi-field resolver should fan out to several columns at once (`--fanout`, see below). Use custom Python (still through `CurationApplicator`) for everything else: renaming raw columns, building staging columns with `value_sql`, copying across columns with `CASE`/`COALESCE`, or reshaping rows.
 
 1. **Plan** — decide the table name and ordered `CurationOp` list (and whether a resolution pass runs before or after structural ops).
 2. **Dry run** — `applicator.apply(txn, dry_run=True)` (or `--dry-run` on the script) records the transaction in the audit DB but does **not** mutate Lance. Use it to validate ops and provenance, especially for large or mixed transactions.
@@ -59,6 +62,8 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
 ```
 
 Pass `--input-type` (resolver-specific, e.g. `symbol`/`ensembl_id` for `resolve_genes`) when you already know what a column holds; it is more precise than the default `auto` and avoids mis-inference. Resolver kwargs like `--organism` and `--input-type` are forwarded to the tool.
+
+**Fan-out mode (`--fanout`)** — for multi-field resolvers (e.g. `resolve_guide_sequences`) where one expensive call fills several correlated columns. Resolves the distinct values of `--key-column` once, then fans each resolution field out to a target column via a single keyed `MergeColumns` merge. Map fields with repeated `--map FIELD:COLUMN`; target columns that do not exist yet are auto-created (null-initialized, type inferred). Driving the single-column script once per field would re-run the resolver each time, so prefer `--fanout` here. Details in **references/auditable_curation.md**; a worked example in **references/genetic_perturbation_resolution.md**.
 
 See **references/auditable_curation.md** for the applicator API (imports, `ApplyResult`, `allowed_columns` semantics, `propose_column_replacements`) and the general constraints of the resolution script.
 
