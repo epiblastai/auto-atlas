@@ -69,13 +69,13 @@ A nullable schema field (`... | None`) describes what the value *may* be, not pe
 Before leaving any field null:
 
 1. **Exhaust the data package.** The value may live in another raw column of the same table, a sibling file (e.g. dataset/collection metadata or publication), or be derivable from a resolver.
-2. **Infer when it is unambiguous.** Constants implied by the dataset are fair game — e.g. a single-cell-line human dataset implies `organism = "Homo sapiens"`; a gene-only var table implies `feature_type = "gene"`.
+2. **Infer when it is unambiguous.** Constants implied by the dataset are fair game — e.g. a single-cell-line human dataset implies `organism = "Homo sapiens"`.
 3. **Ask the user** when a field is meaningful, knowable, but not present anywhere you can reach (e.g. assay, perturbation library, Ensembl release). Surface exactly which field and why you cannot fill it rather than silently nulling it.
 4. **Only then leave it null**, and say so — note which fields you left null and why.
 
 This is stricter than the value-resolution rule below: it covers every field including ones with no resolver.
 
-**Out of scope: automatically generated columns.** Do not populate `uid` or other auto-generated/derived columns (e.g. `global_index`, `perturbation_search_string`, the `has_*` pointer flags). These are deterministic functions of the data and schema — no decision or source to record — so they are not curation. A downstream finalization step assigns them and validates the table against the schema. Harmonization stops at aligning columns and resolving values.
+**Out of scope: automatically generated columns.** Do not populate `uid`, `dataset_uid`, or other auto-generated/derived columns. These are deterministic functions of the data and schema — no decision or source to record — so they do not need to be covered in the audit trail. A downstream finalization step will assign them and validate the table exactly matches the schema. Harmonization stops at aligning columns and resolving values.
 
 ## Resolving values
 
