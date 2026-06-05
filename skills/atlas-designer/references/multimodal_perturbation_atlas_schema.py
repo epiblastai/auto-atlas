@@ -211,8 +211,8 @@ class GenomicFeatureSchema(FeatureBaseSchema):
     # For transcripts this would be e.g. ENST00000269305.
     feature_id: str
 
-    # What level of resolution this feature represents
-    feature_type: str  # one of FeatureType
+    # What level of resolution this feature represents; uses the FeatureType enum
+    feature_type: FeatureType
 
     # For transcript/isoform-level features, e.g. ENST00000269305.7
     transcript_id: str | None = None
@@ -248,8 +248,8 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
     # "chr6_GL000256v2_alt", "chrEBV"
     sequence_name: str
 
-    # The role this sequence plays in the assembly
-    sequence_role: str  # one of SequenceRole
+    # The role this sequence plays in the assembly; uses the SequenceRole enum
+    sequence_role: SequenceRole
 
     organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
     # The genome assembly name, e.g. "GRCh38", "GRCm39"
@@ -354,8 +354,8 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
     relationship and should not be stored here.
     """
 
-    # Reagent type
-    perturbation_type: str  # one of GeneticPerturbationType
+    # Reagent type; uses the GeneticPerturbationType enum
+    perturbation_type: GeneticPerturbationType
 
     # The actual reagent sequence, e.g. the 20bp guide or siRNA duplex
     guide_sequence: str | None = StableUIDField.declare(default=None)
@@ -378,8 +378,8 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
     intended_gene_name: str | None = None
     intended_ensembl_gene_id: str | None = CrossReferenceField.declare(database_name="ENSEMBL")
 
-    # Where the guide lands relative to gene structure
-    target_context: str | None = None  # one of TargetContext
+    # Where the guide lands relative to gene structure; uses the TargetContext enum
+    target_context: TargetContext | None = None
 
     # Reagent provenance
     library_name: str | None = None  # e.g. "Brunello", "CROPseq"
@@ -412,7 +412,7 @@ class BiologicPerturbationSchema(LanceModel):
 
     # Biologic identity
     biologic_name: str
-    biologic_type: str  # one of BiologicPerturbationType
+    biologic_type: BiologicPerturbationType  # Uses the BiologicPerturbationType enum
 
     # Protein identity, if applicable
     uniprot_id: str | None = CrossReferenceField.declare(database_name="UniProt")
@@ -477,7 +477,7 @@ class CellIndex(HoxBaseSchema):
     # UIDs and types go together to specify foreign keys. The uid is a foreign
     # key value and the perturbation type determines which table it is a key in.
     perturbation_uids: list[str] | None
-    perturbation_types: list[str] | None  # one of PerturbationType
+    perturbation_types: list[PerturbationType] | None  # Uses the PerturbationType enum
     # Concentrations for the perturbation in micromolar, if applicable, else use -1
     # to keep the lists equally long
     perturbation_concentrations_um: list[float] | None
