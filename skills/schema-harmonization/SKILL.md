@@ -75,6 +75,8 @@ Before leaving any field null:
 
 This is stricter than the value-resolution rule below: it covers every field including ones with no resolver.
 
+**Out of scope: automatically generated columns.** Do not populate `uid` or other auto-generated/derived columns (e.g. `global_index`, `perturbation_search_string`, the `has_*` pointer flags). These are deterministic functions of the data and schema — no decision or source to record — so they are not curation. A downstream finalization step assigns them and validates the table against the schema. Harmonization stops at aligning columns and resolving values.
+
 ## Resolving values
 
 Resolution maps raw values to canonical identifiers per domain. Shared principles: **never NaN unless there is genuinely no value**, and **flag resolution status** (e.g. a boolean `resolved` column). Per-domain references hold the specific considerations and worked examples:
