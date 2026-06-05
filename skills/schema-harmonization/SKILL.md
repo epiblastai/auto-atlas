@@ -77,6 +77,8 @@ This is stricter than the value-resolution rule below: it covers every field inc
 
 **Out of scope: automatically generated columns.** Do not populate `uid`, `dataset_uid`, or other auto-generated/derived columns. These are deterministic functions of the data and schema — no decision or source to record — so they do not need to be covered in the audit trail. A downstream finalization step will assign them and validate the table exactly matches the schema. Harmonization stops at aligning columns and resolving values.
 
+**Out of scope: foreign key columns.** Do not populate columns that are marked as `ForeignKeyField` or `PolymorphicForeignKeyField`. These cannot be determined accurately until all tables in a collection have been harmonized to their schemas.
+
 ## Resolving values
 
 Resolution maps raw values to canonical identifiers per domain. Shared principles: **never NaN unless there is genuinely no value**, and **flag resolution status** (e.g. a boolean `resolved` column). Per-domain references hold the specific considerations and worked examples:
