@@ -15,6 +15,7 @@ from auto_atlas.curation.types import (
     CurationTransaction,
     DropColumn,
     ExplodeColumn,
+    MergeColumns,
     OpKind,
     RenameColumn,
     ReplaceValue,
@@ -98,6 +99,8 @@ def _op_payload(change: CurationOp) -> dict[str, Any] | None:
             "slot_label_column": change.slot_label_column,
             "drop_null_slots": change.drop_null_slots,
         }
+    if isinstance(change, MergeColumns):
+        return {"key_column": change.key_column, "rows": change.rows}
     return None
 
 
@@ -148,6 +151,9 @@ def _row_to_op(row: Any) -> CurationOp:
             drop_null_slots=payload["drop_null_slots"],
             **shared,
         )
+    if kind is OpKind.MERGE_COLUMNS:
+        payload = json.loads(row["payload_json"])
+        return MergeColumns(key_column=payload["key_column"], rows=payload["rows"], **shared)
     raise ValueError(f"Unknown op_kind: {row['op_kind']}")
 
 

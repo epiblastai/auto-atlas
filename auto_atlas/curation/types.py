@@ -27,6 +27,7 @@ class OpKind(StrEnum):
     RENAME_COLUMN = "rename_column"  # rename a column (e.g. raw name -> schema field)
     DROP_COLUMN = "drop_column"  # remove a column (e.g. non-schema raw columns)
     CAST_COLUMN = "cast_column"  # change a column's data type
+    MERGE_COLUMNS = "merge_columns"  # fill many columns from a keyed resolution batch
 
     # The ops below are mechanical reshapes, not resolution/curation decisions:
     # they restructure the table (multiplying rows) but record no per-cell
@@ -137,6 +138,37 @@ class CastColumn(CurationOp):
 
     # Serialized Arrow type alias (e.g. "int64", "double", "string", "bool").
     data_type: str
+
+
+@dataclass(kw_only=True)
+class MergeColumns(CurationOp):
+    """Fill many columns at once from a keyed resolution batch (update-only).
+
+    One expensive resolver call (e.g. ``resolve_guide_sequences``) yields many
+    correlated fields per input value, destined for several different schema
+    columns. This op applies them in a single keyed join: ``rows`` is the source
+    table (one dict per *distinct resolved* key), and rows in the target table
+    whose ``key_column`` matches have the remaining columns updated. Unmatched
+    target rows are left untouched; no rows are inserted or deleted.
+
+    ``rows`` keys are column names; every row carries ``key_column`` plus the
+    target columns to fill. The target columns must already exist (add them with
+    ``AddColumn`` first if needed). Provenance here is batch-level -- one op for
+    the whole fan-out -- rather than per-value like :class:`ReplaceValue`; the
+    per-key mapping is preserved in ``rows``. ``column`` is required by the base
+    op and used only as an audit anchor; set it to a representative target column.
+
+    Note: the underlying merge reorders rows (matched rows are rewritten at the
+    end). It is row-count preserving and reversible via the Lance version, but
+    do not rely on row order across it.
+    """
+
+    kind: ClassVar[OpKind] = OpKind.MERGE_COLUMNS
+
+    # Join key column, present in both the target table and every source row.
+    key_column: str
+    # Source records: one dict per distinct key, each with key_column + targets.
+    rows: list[dict[str, Any]]
 
 
 # --- Row-multiplying (shape-changing) ops -----------------------------------

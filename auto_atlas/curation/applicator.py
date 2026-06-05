@@ -26,6 +26,7 @@ from auto_atlas.curation.types import (
     CurationTransaction,
     DropColumn,
     ExplodeColumn,
+    MergeColumns,
     OpKind,
     RenameColumn,
     ReplaceValue,
@@ -198,6 +199,13 @@ class CurationApplicator:
                 columns = (columns - consumed) | set(created)
                 continue
 
+            if kind is OpKind.MERGE_COLUMNS:
+                # Update-only keyed merge: schema is unchanged, so no simulation.
+                self._validate_merge_columns(change, columns, transaction.table_name)
+                targets = [c for c in self._merge_columns_targets(change) if c != change.key_column]
+                self._check_allowed(targets, allowed_columns)
+                continue
+
             if kind is OpKind.ADD_COLUMN:
                 if change.column in columns:
                     raise ValueError(
@@ -274,6 +282,45 @@ class CurationApplicator:
             raise ValueError(f"WideToLong output column names are not unique: {duplicates}.")
 
     @staticmethod
+    def _merge_columns_targets(change: MergeColumns) -> list[str]:
+        """All column names referenced across a MergeColumns source batch."""
+        seen: dict[str, None] = {}
+        for row in change.rows:
+            for col in row:
+                seen.setdefault(col, None)
+        return list(seen)
+
+    @classmethod
+    def _validate_merge_columns(
+        cls, change: MergeColumns, columns: set[str], table_name: str
+    ) -> None:
+        """Validate an update-only keyed merge against the current column set."""
+        if not change.rows:
+            raise ValueError("MergeColumns requires at least one source row.")
+        if change.key_column not in columns:
+            raise ValueError(
+                f"MergeColumns key_column '{change.key_column}' not found in table "
+                f"'{table_name}'. Available: {sorted(columns)}"
+            )
+
+        referenced = cls._merge_columns_targets(change)
+        missing = [c for c in referenced if c not in columns]
+        if missing:
+            raise ValueError(
+                f"MergeColumns target columns not found in table '{table_name}': "
+                f"{missing}. Add them with AddColumn first. Available: {sorted(columns)}"
+            )
+        if change.key_column not in referenced:
+            raise ValueError(
+                f"MergeColumns key_column '{change.key_column}' must appear in every "
+                f"source row so rows can be matched to the table."
+            )
+
+        key_values = [row.get(change.key_column) for row in change.rows]
+        if len(set(key_values)) != len(key_values):
+            raise ValueError("MergeColumns source rows must have unique key_column values.")
+
+    @staticmethod
     def _check_allowed(cols: list[str], allowed_columns: set[str] | None) -> None:
         if allowed_columns is None:
             return
@@ -343,6 +390,12 @@ class CurationApplicator:
             result = table.drop_columns([change.column])
             return None, self._version_after(result, table)
 
+        if isinstance(change, MergeColumns):
+            source = self._merge_source_table(change, table.schema)
+            result = table.merge_insert(change.key_column).when_matched_update_all().execute(source)
+            rows_updated = getattr(result, "num_updated_rows", None)
+            return rows_updated, self._version_after(result, table)
+
         if isinstance(change, ExplodeColumn):
             new_df = self._explode_frame(change, table.to_pandas())
             return self._rewrite(table_name, new_df)
@@ -352,6 +405,21 @@ class CurationApplicator:
             return self._rewrite(table_name, new_df)
 
         raise ValueError(f"Unsupported operation: {type(change).__name__}")
+
+    @staticmethod
+    def _merge_source_table(change: MergeColumns, target_schema: pa.Schema) -> pa.Table:
+        """Build the merge source, casting columns to their target Lance types.
+
+        ``rows`` carries Python scalars; casting to the target schema's field
+        types makes coordinates land as ints, strands as strings, etc., and
+        keeps null-only columns typed rather than Arrow's ``null`` placeholder.
+        """
+        source = pa.Table.from_pylist(change.rows)
+        fields = [
+            target_schema.field(name) if name in target_schema.names else source.schema.field(name)
+            for name in source.column_names
+        ]
+        return source.cast(pa.schema(fields))
 
     @staticmethod
     def _explode_frame(change: ExplodeColumn, df: pd.DataFrame) -> pd.DataFrame:
