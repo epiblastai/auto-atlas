@@ -18,6 +18,7 @@ dependencies = [
     "mygene",
     "homeobox>=0.2.7",
     "openpyxl",
+    "pubchempy",
 ]
 
 [project.optional-dependencies]

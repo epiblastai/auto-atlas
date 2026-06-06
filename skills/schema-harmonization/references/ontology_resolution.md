@@ -2,8 +2,6 @@
 
 Resolve free-text biological metadata to canonical ontology term **labels** with CELLxGENE-compatible backing IDs. These values live in obs / cell-index tables whose fields are marked `OntologyAlignedField` (or `CrossReferenceField` for cell lines) in the target schema — typically `cell_type`, `tissue`, `disease`, `organism`, `assay`, `development_stage`, `ethnicity`, `cell_line`.
 
-For gene/protein identifiers on a feature (`var`) table see **references/gene_resolution.md**; for genetic perturbation targets see **references/genetic_perturbation_resolution.md**.
-
 ## Task description
 
 The expected input is a LanceDB URL and table name along with a target homeobox schema file. The table name must correspond to one of the schema classes, modulo any feature-space suffixes.
@@ -62,7 +60,7 @@ Repeat per field, swapping `--tool`/`--column` to the matching pair from the tab
 
 ## Running the custom entities (Python)
 
-`development_stage` and `ethnicity` have no registered tool. Resolve them through `resolve_ontology_terms` and drive the result with `propose_column_replacements` — the same Python path documented in **references/auditable_curation.md**, with `resolution_field_name="resolved_value"`:
+`development_stage` and `ethnicity` have no registered tool. Resolve them through `resolve_ontology_terms` and drive the result with `propose_column_replacements`, passing `resolution_field_name="resolved_value"`:
 
 ```python
 import lancedb
