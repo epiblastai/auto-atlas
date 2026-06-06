@@ -109,5 +109,3 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
   --reason "resolve guide targets via BLAT" --organism human \
   --dry-run
 ```
-
-For a full worked example exercising these constraints (Ensembl IDs and symbols on one table), see **references/gene_resolution.md**. For a fan-out + reshape example (a dual-guide library), see **references/genetic_perturbation_resolution.md**.

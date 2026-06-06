@@ -2,8 +2,6 @@
 
 Resolve gene identifiers in feature dataframes — typically the var index of a gene expression or chromatin accessibility matrix. Maps gene symbols and Ensembl IDs to canonical identifiers using the `auto_atlas` suite.
 
-For genetic perturbation target resolution (obs-level: control detection, combinatorial splitting, guide RNA alignment, perturbation method classification), see **references/genetic_perturbation_resolution.md** instead.
-
 ## Task description
 
 The expected input is a LanceDB URL and table name along with a target homeobox schema file. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature space suffixes.
@@ -26,7 +24,7 @@ When resolution succeeds (`confidence >= 0.5`, `resolved_value` is not None), us
 
 Raw table has `gene_id` (Ensembl) and `gene_name` (common name). Target schema uses `ensembl_id` and `gene_symbol`. Some rows have null `gene_id` but a usable `gene_name`.
 
-The resolution-pass script always resolves and replaces **in the same `--column`** (see the same-column constraint in **references/auditable_curation.md**). Plan around it: either update schema columns in place, or resolve a staging column and copy results back with `SetColumn`.
+The resolution-pass script always resolves and replaces **in the same `--column`**. Plan around it: either update schema columns in place, or resolve a staging column and copy results back with `SetColumn`.
 
 | Phase | What to do |
 |-------|------------|
@@ -65,6 +63,6 @@ txn = CurationTransaction(
 )
 ```
 
-**Staging-column variant** — If you prefer not to overwrite `ensembl_id` with symbols, add `gene_resolve_input` via `AddColumn` + `value_sql`, run the script on that column, copy back with `SetColumn(column="ensembl_id", value_sql="CASE WHEN ensembl_id IS NULL THEN gene_resolve_input ELSE ensembl_id END", …)`, then drop the staging column. See the staging-column pattern in **references/auditable_curation.md**.
+**Staging-column variant** — If you prefer not to overwrite `ensembl_id` with symbols, add `gene_resolve_input` via `AddColumn` + `value_sql`, run the script on that column, copy back with `SetColumn(column="ensembl_id", value_sql="CASE WHEN ensembl_id IS NULL THEN gene_resolve_input ELSE ensembl_id END", …)`, then drop the staging column.
 
-**Failed non-null Ensembl IDs** — `ReplaceValue` maps one `old_value` to a single `new_value`, so a bad Ensembl ID that should resolve differently per row needs an explicit agent decision (filter, manual ops, or row-level `SetColumn` expressions), not an implicit fallback. See the one-`new_value`-per-`old_value` constraint in **references/auditable_curation.md**.
+**Failed non-null Ensembl IDs** — `ReplaceValue` maps one `old_value` to a single `new_value`, so a bad Ensembl ID that should resolve differently per row needs an explicit agent decision (filter, manual ops, or row-level `SetColumn` expressions), not an implicit fallback.

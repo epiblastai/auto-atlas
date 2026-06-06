@@ -1,184 +1,134 @@
-# Protein Resolver
+# Protein resolution
 
-Resolve protein identifiers in feature dataframes — typically the var index of an ADT/CITE-seq protein abundance matrix. Maps protein aliases, gene names, and UniProt accessions to canonical identifiers using the `auto_atlas` suite.
+Resolve protein identifiers — protein aliases, antibody targets, gene names, and UniProt accessions — to canonical UniProt-backed values (`uniprot_id`, `protein_name`, `gene_name`, `sequence`, `sequence_length`) with `resolve_proteins` from the `auto_atlas` suite.
 
-For biologic perturbation resolution (cytokines, growth factors, antibodies applied to cells), use a dedicated **biologic-perturbation-resolver** skill. For genetic perturbation targets (CRISPR, siRNA, shRNA), use the **genetic-perturbation-resolver** skill.
+Proteins appear in more than one kind of table, so do not assume a `var`/feature table. The same resolver fills the protein-identity columns wherever they live — for example the surface-protein panel of an ADT/CITE-seq feature registry, or a biologic-perturbation registry whose rows are proteins, cytokines, or antibodies applied to cells and carry a UniProt accession alongside their own name/type columns. What differs between tables is only which protein-identity columns the schema defines and how non-protein rows (isotype controls, non-protein biologics) are handled.
 
-## Interface
+## Task description
 
-**Input:**
-- `Protein_raw.csv` — consolidated var data across all experiments, at the accession level. Contains `var_index`, `experiment_subdir`, and protein identifiers (aliases, gene names, or UniProt accessions).
-- A user-specified target schema describing which output columns to produce.
+The expected input is a LanceDB URL and table name along with a target homeobox schema file. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature-space suffixes.
 
-**Output:**
-- `Protein_resolved.csv` — all raw columns plus resolved columns (`feature_name`, `uniprot_id`, `protein_name`, `gene_name`, `organism`, `sequence`, `sequence_length`, `resolved`, `uid`). This is the full intermediate output for inspection and debugging.
-- `ProteinSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, no `resolved` column, no raw columns. Parquet preserves types (nullable ints, lists, bools) so the file can be loaded directly into LanceDB.
-- `{fs}_standardized_var.csv` — per-experiment var CSV with the original var index and a `global_feature_uid` column mapping each feature to its resolved UID. Written in each experiment subdirectory.
-- `resolver_reports/protein-resolver.md` — markdown report written in the working directory. Summarize inputs, output paths, resolved/unresolved counts, control detection summary, and any fields left blank in the finalized schema output.
+Inspect the target schema first to see **which** protein-identity columns it actually declares — one table may carry the full set (UniProt accession, protein name, gene name, sequence, sequence length), another may want only the accession beside its own non-protein columns. Resolve and fan out only into the columns that exist.
 
-## Reporting
+`resolve_proteins` is a **multi-field resolver**: a single call on one name returns the UniProt accession, recommended protein name, gene name, organism, sequence, and sequence length together. The natural shape is therefore a **fan-out** — resolve the distinct name column once and write each correlated field into its matching schema column in one keyed merge.
 
-Each run must write a markdown report to `resolver_reports/` in the working directory.
-
-- Create the directory if it does not exist.
-- Default report path: `resolver_reports/protein-resolver.md`
-- Overwrite the report for the current run unless the caller asks for a different naming scheme.
-- Include:
-  - input file path(s)
-  - output file path(s)
-  - row counts and resolved/unresolved counts
-  - isotype control detection summary
-  - correction mappings or fallback logic used
-  - any finalized schema fields left blank, with reasons
-
-## Scripts
-
-### `resolve_proteins.py` — Resolution
-
-Auto-detects protein identifier column, separates isotype controls (IgG1, IgG2a, etc.) and other controls, resolves actual proteins via `resolve_proteins()`, and maps organism to scientific name via `resolve_organisms()`.
-
-```bash
-python skills/protein-resolver/scripts/resolve_proteins.py \
-    <input_csv> <output_csv> \
-    [--protein-col COL] [--organism ORG] \
-    [--index-col COL] [--dry-run]
-```
-
-- `--protein-col`: Column with protein identifiers. Default: auto-detect from columns (`var_index`, `feature_name`, `protein`, etc.) then index.
-- `--organism`: Organism for resolution. Default: `human`.
-- `--index-col`: Override which CSV column becomes the DataFrame index. Use `--index-col none` to disable index handling.
-- `--dry-run`: Print detected columns and planned operations without writing output.
-
-#### Columns produced
-
-| Column | Source |
-|---|---|
-| `feature_name` | Original protein alias from input |
-| `uniprot_id` | `ProteinResolution.uniprot_id` or None |
-| `protein_name` | Resolved protein name, or original value if unresolved |
-| `gene_name` | `ProteinResolution.gene_name` or None |
-| `organism` | Scientific name via `resolve_organisms()` (e.g., `"Homo sapiens"`) |
-| `sequence` | `ProteinResolution.sequence` or None |
-| `sequence_length` | `ProteinResolution.sequence_length` or None |
-| `resolved` | Boolean — `True` if resolution succeeded |
-| `uid` | Unique ID via `make_uid()` |
-
-### `write_standardized_var.py` — Per-experiment standardized var CSVs
-
-Reads the resolved CSV to build a `var_index → uid` mapping, then writes `{fs}_standardized_var.csv` in each experiment subdirectory containing the original var index and a `global_feature_uid` column.
-
-```bash
-python skills/protein-resolver/scripts/write_standardized_var.py \
-    <accession_dir> \
-    [--resolved-csv Protein_resolved.csv] \
-    [--feature-space protein]
-```
-
-- `--resolved-csv`: Filename of the resolved CSV in the accession directory. Default: `GenomicFeatureSchema_resolved.csv` (override to `Protein_resolved.csv`).
-- `--feature-space`: Feature space name used to find `{fs}_raw_var.csv` per experiment and name the output. Default: `gene_expression` (override to `protein`).
-
-Experiment directories are auto-discovered by scanning for `{fs}_raw_var.csv` files under the accession directory.
-
-### `finalize_features.py` — Schema finalization with type coercion
-
-Takes the resolved CSV, adds any schema-specific columns, drops everything not in the schema (including `resolved`), coerces types (JSON lists, bools, numerics), and writes parquet with correct types so the output can be loaded directly into LanceDB without further manipulation.
-
-Does NOT do per-row pydantic validation — type coercion + parquet schema enforcement is sufficient. Type errors surface at LanceDB insertion time.
-
-```bash
-python skills/protein-resolver/scripts/finalize_features.py \
-    <resolved_csv> <output_parquet> <schema_module> <schema_class> \
-    [--column KEY=VALUE ...]
-```
-
-- `--column KEY=VALUE`: Add a column. If VALUE is an existing column name, copies that column. If VALUE is `None` or `null` (case-insensitive), sets actual Python None. Otherwise uses VALUE as a constant for all rows.
-
-Example:
-
-```bash
-python skills/protein-resolver/scripts/finalize_features.py \
-    /tmp/GSE123/Protein_resolved.csv \
-    /tmp/GSE123/ProteinSchema.parquet \
-    homeobox_examples.multimodal_perturbation_atlas.schema \
-    ProteinSchema \
-    --column feature_type=protein \
-    --column feature_id=uniprot_id
-```
-
----
-
-## Workflow
-
-### 1. Run the resolution script
-
-```bash
-python skills/protein-resolver/scripts/resolve_proteins.py \
-    /path/to/Protein_raw.csv \
-    /path/to/Protein_resolved.csv
-```
-
-Review the output for resolved/unresolved counts and isotype control detection.
-
-### 2. Finalize against the target schema
-
-Read the target schema to determine which columns need to be added, then run:
-
-```bash
-python skills/protein-resolver/scripts/finalize_features.py \
-    /path/to/Protein_resolved.csv \
-    /path/to/ProteinSchema.parquet \
-    <schema_module> <schema_class> \
-    --column feature_type=protein \
-    --column feature_id=uniprot_id
-```
-
-The script coerces types and writes parquet — the output is ready for direct LanceDB ingestion.
-
-### 3. Write per-experiment standardized var CSVs
-
-After finalization, write per-experiment `{fs}_standardized_var.csv` files that map each experiment's var index to the resolved UIDs:
-
-```bash
-python skills/protein-resolver/scripts/write_standardized_var.py \
-    /path/to/accession_dir \
-    --resolved-csv Protein_resolved.csv \
-    --feature-space protein
-```
-
-This requires the caller (preparer) to provide the accession directory path and feature space name.
-
-### 4. Write the markdown report
-
-After finalization, write `resolver_reports/protein-resolver.md` in the working directory with the run summary, control detection details, and blank-field audit.
-
-Common cases:
-- Use `--column feature_id=uniprot_id` when the schema wants a stable protein foreign key.
-- Use literal constants such as `--column feature_type=protein` for schema-wide values.
-- `sequence` and `sequence_length` are populated from the SwissProt reference DB when a UniProt ID resolves.
-- `FeatureBaseSchema.global_index` is auto-generated at ingestion time, not during resolution.
-
----
+This reference is designed to guide you through the specific resolution considerations for proteins.
 
 ## Resolution Strategy
 
-All resolved columns follow the same principle: **never NaN unless there is genuinely no value**, and **always flag resolution status with a boolean `resolved` column.**
-
-1. **Resolution succeeds** (`resolved_value` is not None) → use canonical values from `ProteinResolution` (e.g., `.uniprot_id`, `.protein_name`). Set `resolved=True`.
-2. **Resolution fails** (`resolved_value` is None) → keep the original value for name fields (do not set to NaN), but set `resolved=False`. ID fields (`uniprot_id`) can be None when no mapping exists.
-3. **Isotype controls** → `resolved=False`, protein identity fields (`uniprot_id`, `gene_name`, `sequence`, `sequence_length`) set to None. `protein_name` keeps the original alias.
-4. **NaN only when no value exists** — e.g., a protein has no known gene name at all.
+1. **Resolution succeeds** (`resolved_value` is not None) → use the canonical fields from the `ProteinResolution` (`uniprot_id`, `protein_name`, `gene_name`, `sequence`, `sequence_length`). `resolved_value` **is** the UniProt accession, so it equals `uniprot_id`.
+2. **Resolution fails** (`resolved_value` is None) → keep the original name where a name column expects one; the UniProt accession and the other identity fields stay null until the name can be resolved.
+3. **Non-protein rows** (isotype controls; non-protein agents such as small molecules sharing a mixed perturbation registry) → leave every protein-identity column null. `resolve_proteins` does not flag these — they are identified and flagged by other means (below).
 
 ## Rules
 
-- **Accession-level only.** This resolver operates at the accession level on `Protein_raw.csv`, not per-experiment. The raw CSV is already deduplicated on `var_index` by the preparer — the same protein appearing in multiple experiment subdirs should only have one row.
-- **No `validated_` prefix.** Output columns use schema field names directly (e.g., `protein_name` not `validated_protein_name`). This is the project-wide convention for all resolver output.
-- **Organism as scientific name.** Use `resolve_organisms()` to map common names to scientific names. Do not hardcode organism mappings.
-- **Assign UIDs via `make_uid()`.** Every unique feature row gets a UID in the output.
-- **One-step resolution.** Use `resolve_proteins()` directly. Do not attempt the old two-step alias→gene symbol→UniProt approach.
-- **Isotype controls are NOT caught by `is_control_label()`.** Use the explicit isotype patterns defined in the resolve script (IgG1, IgG2a, IgG2b, IgG2c, IgM, IgA, IgD, IgE, plus "isotype", "mouse-igg*", "rat-igg*" prefixes).
-- **Assume human** unless the dataset metadata specifies another organism.
-- **Never set name columns to NaN for failed resolution.** Use the original value and set `resolved=False`.
-- **Output columns may overwrite raw columns.** In particular, resolved `organism` replaces any raw `organism` column.
-- **Index collisions are renamed.** If the input index name collides with an output column such as `feature_name`, the script renames the index to `raw_<name>` before writing.
-- **Column names follow the user's schema.** Do not assume specific column names — use whatever the user's target schema specifies.
-- **Two output files.** `Protein_resolved.csv` retains `resolved` for inspection. `ProteinSchema.parquet` is type-coerced and production-ready for direct LanceDB ingestion.
+- **Multi-field resolver → fan out.** One `resolve_proteins` call fills several columns. Drive it with `--fanout`/`propose_keyed_columns`, not one single-column pass per field — that would re-run the lookup for every column.
+- **`resolved_value` is the UniProt accession, not a name.** Map it to whatever column the schema uses for the UniProt ID; the human-readable protein name is a separate field. Map both (plus `gene_name`/`sequence`/`sequence_length`) to their schema columns in the same fan-out, and map only the fields the schema actually declares — never canonicalize the name column to an accession and call it the name.
+- **Investigate unresolved names.** `resolve_proteins` already tries names, gene names, and accessions, so a miss usually means a stray suffix or clone tag (`CD8a (clone RPA-T8)` → `CD8a`). Normalize the name with an explicit `ReplaceValue`/`SetColumn` and re-run, rather than accepting a low resolution rate.
+- **Keep authoritative existing annotation.** If the raw table already carries a trustworthy accession or gene name (e.g. from the vendor), prefer it over re-derivation and only fan out the fields it lacks.
+- **Organism as scientific name.** Use `resolve_organisms()` to canonicalize the organism column to its NCBITaxon name (e.g. `"Homo sapiens"`); do not hardcode mappings. `resolve_proteins` only echoes the organism context you pass in — it is not an organism resolver.
+- **Isotype controls are NOT caught by `is_control_label()`.** It returns `False` for `IgG1`, `IgG2a`, `mouse-IgG1`, `isotype control`, etc. Detect them explicitly (patterns like `IgG1/2a/2b/2c`, `IgM`, `IgA`, `IgD`, `IgE`, plus `isotype` and `mouse-/rat-IgG*` prefixes).
+- **Don't invent identity for non-proteins.** Controls and non-protein agents get a null UniProt accession — never fabricate one. Where the schema has a flag for them, set it deliberately; where control status is owned by another resolver, just leave the protein columns null.
+- **Assume human** unless the dataset metadata specifies another organism, in which case pass that organism through to `resolve_proteins` and `resolve_organisms`.
+- **Align before resolving.** Any single-column pass resolves and writes back within the **same** `--column`, so first bring the raw name column to its schema field name with a `schema_align` `RenameColumn` transaction. A fan-out key column may instead stay as a raw staging column that finalization drops.
+- **Leftover raw columns are dropped at finalization.** Raw name/clone/QC columns that map to no schema field are removed by `DropColumn` in the finalization step, not during resolution.
+
+## Tools
+
+```python
+from auto_atlas import resolve_proteins, resolve_organisms
+from auto_atlas.types import ProteinResolution, ResolutionReport
+```
+
+| Tool | Input | What it finds (resolver result fields) | Use it to fill |
+|------|-------|-----------------------------------------|----------------|
+| `resolve_proteins(values, organism="human")` | Protein names, gene names, UniProt accessions, or a mix | `uniprot_id`, `protein_name`, `gene_name`, `organism`, `sequence`, `sequence_length` (`resolved_value` == `uniprot_id`) | the protein-identity columns, via fan-out |
+| `resolve_organisms(values)` | Common or scientific organism names | NCBITaxon canonical name | the `organism` column |
+
+`resolve_proteins` returns a `ResolutionReport` (`total`, `resolved`, `unresolved`, `ambiguous`, `results`) with one `ProteinResolution` per input value. Both tools are registered with `apply_resolution_pass.py` (confirm with `--list-tools`).
+
+## Running it (fan-out)
+
+Resolve the distinct name column once and fan the correlated fields out to their schema columns. In `--map FIELD:COLUMN`, `FIELD` is the fixed resolver field and `COLUMN` is whatever the target schema calls it; include only the columns the schema declares. Missing target columns are auto-created (null-initialized):
+
+```bash
+python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+  <path/to/lance_db> \
+  --table <table> \
+  --tool resolve_proteins --fanout \
+  --key-column <name_column> \
+  --map uniprot_id:<uniprot_col> \
+  --map protein_name:<protein_name_col> \
+  --map gene_name:<gene_name_col> \
+  --map sequence:<sequence_col> \
+  --map sequence_length:<sequence_length_col> \
+  --reason "resolve proteins to UniProt" \
+  --organism human \
+  --dry-run
+```
+
+`--key-column` is the column holding the raw names; the mapped target columns receive the canonical values where the name resolved. Controls and other failures resolve nothing and are skipped, so their identity rows stay null. Drop `--dry-run` to apply.
+
+Resolve the organism column as its own single-column pass (often a near-constant — investigate any unresolved values rather than accepting a low rate):
+
+```bash
+python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+  <path/to/lance_db> \
+  --table <table> \
+  --tool resolve_organisms \
+  --column <organism_col> \
+  --resolution-field-name resolved_value \
+  --reason "canonicalize organism to NCBITaxon"
+```
+
+## Controls and non-protein rows
+
+Isotype controls (and CLR-normalization controls) are not proteins. The fan-out already leaves their identity columns null because they resolve nothing — the only deliberate write is a flag, **and only if the schema has one**. Because `is_control_label()` does not catch isotypes, match them in SQL and set the flag column directly. Lance evaluates `value_sql` with DataFusion, where `regexp_match(...) IS NOT NULL` yields the boolean (it does **not** parse `CASE WHEN` or the `~` operator):
+
+```python
+from auto_atlas import (
+    SetColumn, CurationApplicator, CurationTransaction, default_audit_db_path,
+)
+
+lance_path, table_name = "<path/to/lance_db>", "<table>"
+control_col = "<control_flag_col>"   # whatever the schema calls it, if it has one
+name_col = "<name_column>"
+txn = CurationTransaction(
+    table_name=table_name,
+    changes=[
+        SetColumn(
+            column=control_col,
+            value_sql=(
+                f"regexp_match(lower({name_col}), "
+                "'(igg[1234][abc]?|igm|iga|igd|ige|isotype|mouse-igg|rat-igg)') "
+                "IS NOT NULL"
+            ),
+            tool="schema_align",
+            reason="flag isotype/CLR controls from antibody panel",
+        ),
+    ],
+)
+applicator = CurationApplicator(lance_path, audit_db_path=default_audit_db_path(lance_path))
+try:
+    applicator.apply(txn, allowed_columns={control_col})
+finally:
+    applicator.close()
+```
+
+Tune the pattern to the table's actual control labels — inspect the distinct names first. In a mixed registry where control/negative-control status is owned by a perturbation or molecule resolver, do **not** derive it here; protein resolution simply leaves the UniProt accession null for non-protein rows.
+
+## Worked example: ADT/CITE-seq protein panel
+
+A protein feature registry has one antibody-target name column (`ab_target`: names like `CD8a`, `CD3`, `anti-PD-1`, plus a handful of `IgG1`/`IgG2a isotype` controls) and some clone/QC columns. The schema declares a UniProt-accession column (its stable UID), plus protein-name, gene-name, organism, sequence, sequence-length, and a CLR-control flag.
+
+Sequence the work as stage the key → fan out → resolve organism → flag controls, then finalize:
+
+| Phase | What to do |
+|-------|------------|
+| Stage the name | Keep `ab_target` (or `RenameColumn` it to a staging column) as the fan-out key. If it is not itself a schema field, it is dropped at finalization rather than renamed into one. |
+| Resolve (fan-out) | `resolve_proteins` on the distinct names, fanning each resolver field into its schema column (command above). One reference lookup per distinct name; controls and misses resolve nothing. |
+| Organism | One single-column `resolve_organisms` pass on the organism column (or `AddColumn` it as a constant if the panel is single-organism and the column is absent). |
+| Controls | Set the CLR-control flag from the isotype pattern (above). |
+| Finalize | `DropColumn` the staging name column and any clone/QC columns that map to no schema field. |
+
+For a biologic-perturbation registry, the same fan-out fills the UniProt accession (and any of `protein_name`/`gene_name`/`sequence` the schema keeps) from the agent's name column; rows whose agent is not a protein simply resolve nothing, and their control/perturbation status is set by the perturbation resolver, not here.

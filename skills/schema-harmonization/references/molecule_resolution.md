@@ -1,332 +1,137 @@
-# Molecule Resolver
+# Molecule resolution
 
-Resolve chemical compound identifiers and populate `SmallMoleculeSchema` registry records for downstream ingestion. Resolve `SmallMolecule_raw.csv` → enrich missing schema fields from available sources → assign UIDs → write `SmallMolecule_resolved.csv` and `SmallMoleculeSchema.parquet`.
+Resolve small-molecule identifiers — compound names, SMILES strings, and PubChem CIDs — to canonical structures (`pubchem_cid`, `canonical_smiles`, `inchi_key`, `iupac_name`, `chembl_id`) with `resolve_molecules` from the `auto_atlas` suite.
 
-Handles two input types that may co-exist in a single dataset:
+Molecules appear in more than one kind of table, so do not assume one. The same resolver fills the structural-identity columns wherever they live — a molecule feature registry, or a perturbation registry whose rows are compounds applied to cells. What differs between tables is only which structural columns the schema declares and how control rows (vehicle, untreated, DMSO) are treated.
 
-1. **Compound names** — Common or trade names (e.g., "Imatinib", "Dexamethasone").
-2. **SMILES strings** — Structural representations for compounds that fail name resolution.
+## Task description
 
-## Interface
+The expected input is a LanceDB URL and table name along with a target homeobox schema file. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature-space suffixes.
 
-**Input:**
-- `SmallMolecule_raw.csv` — consolidated compound data across all experiments, at the accession level. It may be sparse and does not need to be fully enriched by the preparer.
-- A user-specified target schema.
-- Any supplementary files or file paths available for enrichment, such as vendor catalogs, SMILES tables, or publication-derived tables.
+Inspect the target schema first to see **which** structural-identity columns it actually declares — one table may carry the full set (PubChem CID, SMILES, InChIKey, IUPAC name, ChEMBL ID), another may want only a CID or SMILES beside its own provenance columns. Resolve and fan out only into the columns that exist.
 
-**Output:**
+`resolve_molecules` is a **multi-field resolver**: a single call on one identifier returns the PubChem CID, canonical SMILES, InChIKey, IUPAC name, and ChEMBL ID together. The natural shape is therefore a **fan-out** — resolve the distinct identifier column once and write each correlated structural field into its matching schema column in one keyed merge. The resolver takes an `input_type` of `"name"`, `"smiles"`, or `"cid"`; resolve each kind of identifier with its own pass.
 
-*Accession-level (global foreign key table):*
-- `SmallMolecule_resolved.csv` — all raw columns plus resolved columns, UIDs, `resolved` boolean. Full intermediate output for inspection and debugging.
-- `SmallMoleculeSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, no `resolved` column, no raw columns. Parquet preserves types so the file can be loaded directly into LanceDB.
-- `resolver_reports/molecule-resolver.md` — markdown report written in the working directory. Summarize enrichment sources used, outputs written, counts, unresolved items, and a field-by-field blank justification audit.
-
-*Per-experiment (obs-level fragment):*
-- `{fs}_fragment_molecule_obs.csv` — one per experiment directory. Contains perturbation-related obs columns using the `|` convention: `perturbation_uids|SmallMolecule`, `perturbation_types|SmallMolecule`, `perturbation_concentrations_um|SmallMolecule`, `is_negative_control|SmallMolecule`, `negative_control_type|SmallMolecule`. The cell barcode column is preserved as the index for joining.
-
-**Column naming:** No `validated_` prefix. Use schema field names directly.
-
-## Ownership
-
-This resolver owns completion of the target small molecule schema. Do not assume the preparer has already filled dataset-specific fields.
-
-The resolver must:
-
-1. Inspect the target schema and determine every field that must be populated.
-2. Inspect the raw CSV and any supplementary files or paths provided by the caller.
-3. Fill every schema field that can be derived from the available evidence.
-4. Leave a field blank only after attempting resolution and documenting why the value is unavailable or unjustified.
-
-The preparer may pass helpful context, but the resolver is responsible for the final content of `SmallMolecule_resolved.csv` and `SmallMoleculeSchema.parquet`.
-
-## Reporting
-
-Each run must write a markdown report to `resolver_reports/` in the working directory.
-
-- Create the directory if it does not exist.
-- Default report path: `resolver_reports/molecule-resolver.md`
-- Overwrite the report for the current run unless the caller asks for a different naming scheme.
-- Include:
-  - input file path(s)
-  - supplementary files inspected
-  - output file path(s)
-  - row counts and resolved/unresolved counts
-  - control labels detected
-  - correction mappings or fallback logic used
-  - schema field completeness audit, including reasons for blanks
-
-## Imports
-
-```python
-from auto_atlas import (
-    resolve_molecules,
-    is_control_compound,
-    is_control_label,
-    detect_control_labels,
-    detect_negative_control_type,
-)
-from auto_atlas.types import MoleculeResolution, ResolutionReport
-from homeobox.schema import make_uid
-```
-
-## Scripts
-
-### `scripts/resolve_molecules.py`
-
-Handles the standard compound-name workflow: control detection, molecule resolution via `resolve_molecules`, UID assignment, and CSV output.
-
-```
-python skills/molecule-resolver/scripts/resolve_molecules.py \
-    <input_csv> <compound_column> \
-    [--smiles-column COL] \
-    [--vendor-column COL] \
-    [--catalog-column COL] \
-    [--output-dir <dir>]
-```
-
-| Argument | Description |
-|---|---|
-| `input_csv` | Path to `SmallMolecule_raw.csv` (must have `index_col=0`) |
-| `compound_column` | Column containing compound names / control labels |
-| `--smiles-column` | Column with SMILES strings to carry through |
-| `--vendor-column` | Column with vendor names to carry through |
-| `--catalog-column` | Column with catalog numbers to carry through |
-| `--output-dir` | Output directory (default: same as input) |
-
-The script writes `SmallMolecule_resolved.csv` with these columns populated: `name`, `smiles`, `pubchem_cid`, `iupac_name`, `inchi_key`, `chembl_id`, `uid`, `resolved`. It may leave placeholder `None` for fields that still require dataset-specific enrichment (e.g., `vendor`, `catalog_number`).
-
-**After running the script**, the resolver must continue enrichment until every target schema field is either populated or explicitly justified as blank. Placeholder `None` values are not a stopping point.
-
-### `finalize_features.py` — Schema finalization with type coercion (shared)
-
-Uses the shared `gene-resolver/scripts/finalize_features.py` script. Takes the resolved CSV, drops everything not in the schema (including `resolved` and raw columns), coerces types, and writes parquet with correct types for direct LanceDB ingestion.
-
-```bash
-python skills/gene-resolver/scripts/finalize_features.py \
-    <resolved_csv> <output_parquet> <schema_module> <schema_class> \
-    [--column KEY=VALUE ...]
-```
-
-- `--column KEY=VALUE`: Add a column. If VALUE is an existing column name, copies that column. If VALUE is `None` or `null` (case-insensitive), sets actual Python None. Otherwise uses VALUE as a constant for all rows.
-
-Example:
-
-```bash
-python skills/gene-resolver/scripts/finalize_features.py \
-    /tmp/GSE123/SmallMolecule_resolved.csv \
-    /tmp/GSE123/SmallMoleculeSchema.parquet \
-    homeobox_examples.multimodal_perturbation_atlas.schema \
-    SmallMoleculeSchema
-```
-
----
-
-## Core Constraints
-
-- **One compound per row.** Each accession-level row must represent exactly one compound.
-- **Controls are not compounds.** Control labels map to `None` in compound identity fields and drive `is_negative_control` at the obs level.
-- **Use schema field names directly.** Do not introduce `validated_` prefixes or ad hoc column names.
-- **Resolver owns enrichment.** If a field can be filled from supplementary files, raw identifiers, publication text, or deterministic parsing, do that work here rather than assuming the preparer already did it.
-- **Every blank needs a reason.** In the final report, enumerate any schema fields left blank and justify why they could not be filled safely.
-
-## Resolution Workflow
-
-### A0. Inspect schema and enrichment sources first
-
-Before running any resolution step:
-
-1. Read the target `SmallMoleculeSchema`.
-2. List its fields and identify which are already present in `SmallMolecule_raw.csv`.
-3. Inspect any supplementary files or file paths provided by the caller (vendor catalogs, SMILES tables, etc.).
-4. Determine which fields require:
-   - direct pass-through from raw columns
-   - lookup from supplementary files
-   - resolution via `resolve_molecules`
-5. Keep notes so the final report can justify any remaining blanks.
-
-### A1–A3: Molecule resolution (use the script)
-
-For the standard compound-name workflow, run `resolve_molecules.py` as above.
-
-1. **Load & inspect** — reads the raw CSV, identifies columns
-2. **Control detection** — `detect_control_labels` on the compound column
-3. **Resolve molecules** — `resolve_molecules` on unique non-control compounds; prints resolved/unresolved counts
-
-If the dataset provides compounds by CID or SMILES rather than name, the resolver should handle this in a follow-up step (A4) rather than via the script.
-
-### A4. Perform resolver-owned enrichment for all remaining schema fields
-
-After the base resolution script runs, inspect the partially resolved CSV and fill the remaining schema fields from the best available evidence source:
-
-**Investigate failures.** Since `resolve_molecules` already tries cleaned names, PubChem, and ChEMBL in sequence, unresolved names are genuinely problematic. Common issues:
-
-- **Stray characters:** `Glesatinib?(MGCD265)` -> `Glesatinib`
-- **Parenthetical aliases:** `Abexinostat (PCI-24781)` -> `Abexinostat`
-- **Underscore-joined identifiers:** `Drug_123` -> `Drug`
-
-Build a correction mapping and re-resolve:
-
-```python
-corrections = {
-    "Glesatinib?(MGCD265)": "Glesatinib",
-    "Tucidinostat (Chidamide)": "Tucidinostat",
-}
-
-corrected_names = list(set(corrections.values()))
-correction_report = resolve_molecules(corrected_names, input_type="name")
-
-resolution_map = {res.input_value: res for res in report.results if res.resolved_value is not None}
-for orig, fixed in corrections.items():
-    for res in correction_report.results:
-        if res.input_value == fixed and res.resolved_value is not None:
-            resolution_map[orig] = res
-            break
-```
-
-**SMILES fallback:** If the dataset provides SMILES strings and some names remain unresolved:
-
-```python
-smiles_for_unresolved = [smiles_map[name] for name in still_unresolved if name in smiles_map]
-if smiles_for_unresolved:
-    smiles_report = resolve_molecules(smiles_for_unresolved, input_type="smiles")
-```
-
-- `vendor`:
-  - Prefer supplementary vendor metadata or raw columns.
-  - Use `--vendor-column` in the script if available.
-- `catalog_number`:
-  - Prefer supplementary catalog data or raw columns.
-  - Use `--catalog-column` in the script if available.
-
-Do not finalize while a schema field is still blank merely because the preparer omitted it. The resolver must inspect the available evidence itself.
-
-### A5. Validate completeness before finalization
-
-Before finalizing:
-
-1. Compare the resolved CSV against the target schema field list.
-2. For each schema field, confirm one of:
-   - populated for all applicable rows
-   - intentionally null for control rows only
-   - partially or fully blank with a documented justification
-3. If a required field is blank and you have not yet inspected the obvious enrichment source for it, go back and do that work.
-
-### A6. Finalize against the target schema
-
-After resolution and any dataset-specific enrichment (A4), run the finalize script:
-
-```bash
-python skills/gene-resolver/scripts/finalize_features.py \
-    /path/to/SmallMolecule_resolved.csv \
-    /path/to/SmallMoleculeSchema.parquet \
-    <schema_module> <schema_class>
-```
-
-The script coerces types and writes parquet — the output is ready for direct LanceDB ingestion.
-
-### A7. Write the markdown report
-
-After finalization and obs-fragment writing, write `resolver_reports/molecule-resolver.md` in the working directory with the run summary and field-completeness audit.
-
----
-
-## Phase B: Per-Experiment Obs Fragments
-
-### B1. Load the resolved foreign key table
-
-Load `SmallMoleculeSchema.parquet` (the finalized table with UIDs). Build a lookup from compound identifiers such as `name` or `pubchem_cid` to `uid` values.
-
-```python
-accession_dir = Path("<accession_dir>")
-experiment_dir = Path("<experiment_dir>")
-
-resolved = pd.read_parquet(accession_dir / "SmallMoleculeSchema.parquet")
-raw_obs = pd.read_csv(experiment_dir / f"{fs}_raw_obs.csv", index_col=0)
-
-# Build lookup: compound key → uid
-uid_map = dict(zip(resolved["<key_column>"], resolved["uid"]))
-
-fragment = pd.DataFrame(index=raw_obs.index)
-```
-
-### B2. Build perturbation list columns with `|` convention
-
-```python
-import json
-
-def build_perturbation_lists(row):
-    compound = row[compound_col]
-    concentration = row.get(concentration_col)
-    if pd.isna(compound):
-        return None, None, None
-    if is_control_label(str(compound)):
-        return None, None, None
-
-    uid = uid_map.get(str(compound))
-    if uid is None:
-        return None, None, None
-
-    conc = float(concentration) if pd.notna(concentration) else -1.0
-    return json.dumps([uid]), json.dumps(["small_molecule"]), json.dumps([conc])
-
-results = raw_obs.apply(build_perturbation_lists, axis=1)
-fragment["perturbation_uids|SmallMolecule"] = results.apply(lambda x: x[0])
-fragment["perturbation_types|SmallMolecule"] = results.apply(lambda x: x[1])
-fragment["perturbation_concentrations_um|SmallMolecule"] = results.apply(lambda x: x[2])
-```
-
-### B3. Derive control columns with `|` convention
-
-```python
-fragment["is_negative_control|SmallMolecule"] = raw_obs[compound_col].apply(
-    lambda v: is_control_label(str(v)) if pd.notna(v) else False
-)
-
-fragment["negative_control_type|SmallMolecule"] = raw_obs[compound_col].apply(
-    lambda v: detect_negative_control_type(str(v)) if pd.notna(v) and is_control_label(str(v)) else None
-)
-```
-
-**Critical rule:** `is_negative_control=True` ONLY when the dataset explicitly labels a cell as a control (DMSO, vehicle, etc.). Cells with NaN/None compound (e.g., unassigned wells) must have `is_negative_control=False`.
-
-### B4. Write fragment
-
-```python
-fragment_path = experiment_dir / f"{fs}_fragment_molecule_obs.csv"
-fragment.to_csv(fragment_path)
-print(f"Wrote {fragment_path.name}: {len(fragment)} rows")
-```
-
----
+This reference is designed to guide you through the specific resolution considerations for molecules.
 
 ## Resolution Strategy
 
-All resolved columns follow the same principle: **never NaN unless there is genuinely no value**, and **always flag resolution status with a boolean `resolved` column.**
-
-1. **Resolution succeeds** (`resolved_value` is not None) — use canonical values from `MoleculeResolution`. Set `resolved=True`.
-2. **Resolution fails** (`resolved_value` is None) — keep the original value for name fields. Structural fields (`pubchem_cid`, `smiles`, `inchi_key`, `chembl_id`) can be None. Set `resolved=False`.
-3. **Controls** — map to None in compound identity fields. They inform `is_negative_control` / `negative_control_type` on the obs fragment.
-4. **NaN only when no value exists.**
+1. **Resolution succeeds** (`resolved_value` is not None) → use the canonical structural fields from the `MoleculeResolution` (`pubchem_cid`, `canonical_smiles`, `inchi_key`, `iupac_name`, `chembl_id`). `resolved_value` echoes the input identifier to signal a hit; it is not a new canonical name, so the name column keeps its original value.
+2. **Resolution fails** (`resolved_value` is None) → keep the original name where a name column expects one; the structural fields stay null. When the table also carries SMILES or CIDs for the misses, recover them with a second pass under the matching `input_type`.
+3. **Control rows** (vehicle, untreated, DMSO, etc.) → these are not compounds to structurally resolve; leave the structural columns null. Their control status is owned by the obs / perturbation layer, not derived here.
 
 ## Rules
 
-- **Two-phase workflow.** Phase A resolves globally and assigns UIDs. Phase B maps UIDs to per-experiment obs.
-- **Two output files.** `SmallMolecule_resolved.csv` retains `resolved` for inspection. `SmallMoleculeSchema.parquet` is type-coerced and production-ready for direct LanceDB ingestion.
-- **No `validated_` prefix.** Output columns use schema field names directly.
-- **Use `|` convention in Phase B.** All obs columns that could also be written by other perturbation resolvers use `{field}|SmallMolecule` naming.
-- **Assign UIDs via `make_uid()` in Phase A.** Every unique compound gets a UID.
-- **One-step resolution.** Use `resolve_molecules()` directly. Do not use `resolve_pubchem_cids()` or any epiblast imports.
-- **Use `is_control_label()` for control detection.** It checks both chemical and genetic controls. Do not hardcode control label sets.
-- **`is_negative_control=True` ONLY for explicit controls.** NaN/None compound does NOT imply control.
-- **Controls map to None** in compound identity fields.
-- **Resolver owns enrichment.** If a field can be filled from supplementary files, raw identifiers, or deterministic parsing, do that work here rather than assuming the preparer already did it.
-- **Every blank needs a reason.** In the final report, enumerate any schema fields left blank and justify why they could not be filled safely.
-- **Name failures must be investigated.** Build correction mappings for unresolved names and re-resolve.
-- **SMILES failures are acceptable.** Not all compounds are in PubChem. SMILES may still canonicalize via RDKit (confidence 0.5).
-- **Never set name columns to NaN for failed resolution.** Use the original value. Only structural ID fields can be None.
-- **Always write a `resolved` boolean column.**
-- **Save after each column** to prevent losing work on interruption.
-- **Column names follow the user's schema.** Do not assume specific column names.
-- **Registry vs. obs:** `SmallMoleculeSchema` is a perturbation registry. Control fields (`is_negative_control`, `negative_control_type`) belong on the obs fragment, not the molecule registry.
-- **Never modify h5ad files.** All validated data goes into the CSV only.
-- **Flag remaining unresolved names** for user review. Do not silently drop them.
+- **Multi-field resolver → fan out.** One `resolve_molecules` call fills several columns. Drive it with `--fanout`/`propose_keyed_columns`, not one single-column pass per field — that would re-run the lookup for every column.
+- **Map structural fields, mind the names.** The resolver fields (`pubchem_cid`, `canonical_smiles`, `inchi_key`, `iupac_name`, `chembl_id`) often differ from the schema's column names — e.g. resolver field `canonical_smiles` maps to a `smiles` column. In `--map FIELD:COLUMN`, `FIELD` is the resolver field and `COLUMN` is the schema column. Map only the fields the schema declares.
+- **One `input_type` per pass.** Names, SMILES, and CIDs each resolve under their own `--input-type` (`name`/`smiles`/`cid`). A table that supplies more than one identifier kind needs one pass per kind, each keyed on the column that holds that identifier.
+- **Investigate unresolved names.** `resolve_molecules` already tries the cleaned name, PubChem, and ChEMBL, so a miss usually means a stray character or parenthetical alias (`Glesatinib?(MGCD265)` → `Glesatinib`, `Abexinostat (PCI-24781)` → `Abexinostat`). Normalize the name with an explicit `ReplaceValue`/`SetColumn` and re-run, rather than accepting a low resolution rate. SMILES is a structural fallback when names miss.
+- **Controls are caught by `is_control_label()`.** Unlike antibody isotype controls, vehicle/solvent labels (`DMSO`, `vehicle`, `untreated`, `water`) are matched by `is_control_label()` / `is_control_compound()`. Use them to identify control rows and leave their structural columns null; never fabricate a structure for a control. Use `detect_negative_control_type()` to populate a control-type field if the schema has one.
+- **Keep authoritative existing annotation.** If the raw table already carries a trustworthy CID, SMILES, or InChIKey (e.g. from a vendor catalog), prefer it over re-derivation and only fan out the fields it lacks.
+- **Align before resolving.** Any single-column pass resolves and writes back within the **same** `--column`, so first bring the raw identifier column to its schema field name with a `schema_align` `RenameColumn` transaction; the fan-out key column may be that aligned column or a raw staging column that finalization drops.
+- **Leftover raw columns are dropped at finalization.** Raw alias/provenance columns that map to no schema field are removed by `DropColumn` in the finalization step, not during resolution.
+
+## Tools
+
+```python
+from auto_atlas import resolve_molecules, is_control_label, is_control_compound, detect_negative_control_type
+from auto_atlas.types import MoleculeResolution, ResolutionReport
+```
+
+| Tool | Input | What it finds (resolver result fields) | Use it to fill |
+|------|-------|-----------------------------------------|----------------|
+| `resolve_molecules(values, input_type="name")` | Compound names, SMILES strings, or PubChem CIDs (one kind per call) | `pubchem_cid`, `canonical_smiles`, `inchi_key`, `iupac_name`, `chembl_id` | the structural-identity columns, via fan-out |
+
+`resolve_molecules` returns a `ResolutionReport` (`total`, `resolved`, `unresolved`, `ambiguous`, `results`) with one `MoleculeResolution` per input value. It is registered with `apply_resolution_pass.py` (confirm with `--list-tools`). `is_control_label()` / `is_control_compound()` return a bool for control detection; `detect_negative_control_type()` returns a canonical control-type string or None — use them inline in `SetColumn`/`AddColumn` expressions or to decide which rows to touch.
+
+## Running it (fan-out)
+
+Resolve the distinct identifier column once and fan the correlated structural fields out to their schema columns. In `--map FIELD:COLUMN`, `FIELD` is the fixed resolver field and `COLUMN` is whatever the target schema calls it; include only the columns the schema declares. Missing target columns are auto-created (null-initialized):
+
+```bash
+python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+  <path/to/lance_db> \
+  --table <table> \
+  --tool resolve_molecules --fanout \
+  --key-column <name_column> \
+  --map pubchem_cid:<pubchem_cid_col> \
+  --map canonical_smiles:<smiles_col> \
+  --map inchi_key:<inchi_key_col> \
+  --map iupac_name:<iupac_name_col> \
+  --map chembl_id:<chembl_id_col> \
+  --reason "resolve compounds to canonical structures" \
+  --input-type name \
+  --dry-run
+```
+
+`--key-column` is the column holding the raw identifiers; the mapped target columns receive the canonical values where the identifier resolved. Controls and other failures resolve nothing and are skipped, so their structural rows stay null. Drop `--dry-run` to apply.
+
+When the table also supplies SMILES or CIDs — for compounds that miss name resolution, or that arrive as structures rather than names — run a second fan-out pass keyed on that column under the matching `--input-type`:
+
+```bash
+python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+  <path/to/lance_db> \
+  --table <table> \
+  --tool resolve_molecules --fanout \
+  --key-column <smiles_col> \
+  --map pubchem_cid:<pubchem_cid_col> \
+  --map inchi_key:<inchi_key_col> \
+  --map iupac_name:<iupac_name_col> \
+  --map chembl_id:<chembl_id_col> \
+  --reason "recover structures from SMILES for name-resolution misses" \
+  --input-type smiles
+```
+
+## Controls
+
+Vehicle and solvent controls (`DMSO`, `vehicle`, `untreated`, `water`, …) are not compounds to structurally resolve. The fan-out already leaves their structural columns null because the resolver returns no structure for them, so usually no extra op is needed in the registry. Where the schema has a control-status or control-type field, set it deliberately using the helpers rather than leaving it to the resolver:
+
+```python
+from auto_atlas import (
+    ReplaceValue, CurationApplicator, CurationTransaction, default_audit_db_path,
+    is_control_label, detect_negative_control_type,
+)
+
+lance_path, table_name = "<path/to/lance_db>", "<table>"
+control_type_col, name_col = "<control_type_col>", "<name_column>"
+distinct = [...]  # distinct values of name_col read from the table
+
+txn = CurationTransaction(
+    table_name=table_name,
+    changes=[
+        ReplaceValue(
+            column=control_type_col,
+            old_value=v,
+            new_value=detect_negative_control_type(v),
+            tool="schema_align",
+            reason="classify vehicle/solvent control type",
+        )
+        for v in distinct
+        if is_control_label(v) and detect_negative_control_type(v) is not None
+    ],
+)
+applicator = CurationApplicator(lance_path, audit_db_path=default_audit_db_path(lance_path))
+try:
+    applicator.apply(txn, allowed_columns={control_type_col})
+finally:
+    applicator.close()
+```
+
+In a mixed table where per-cell control status is owned by a perturbation resolver, do **not** derive it here; molecule resolution simply leaves the structural columns null for control rows.
+
+## Worked example: compound perturbation registry
+
+A registry has a compound-name column (`drug`: names like `Imatinib`, `Dexamethasone`, plus `DMSO`/`vehicle` controls), a `SMILES` column populated for some rows, and vendor/catalog columns. The schema declares a name column (a stable component), a PubChem CID (its stable UID), SMILES, InChIKey, IUPAC name, ChEMBL ID, and vendor/catalog provenance.
+
+Sequence the work as align → fan out → SMILES fallback → source provenance, then finalize:
+
+| Phase | What to do |
+|-------|------------|
+| Align names | `RenameColumn` the raw `drug` column to the schema's name field and `SMILES` to its `smiles` field. |
+| Resolve (fan-out) | `resolve_molecules` on the distinct names with `--input-type name`, fanning each structural field into its schema column (command above). Controls and misses resolve nothing. |
+| SMILES fallback | For rows still missing a CID but carrying a SMILES, a second fan-out pass keyed on the `smiles` column with `--input-type smiles`. |
+| Provenance | `vendor`/`catalog_number` are not resolvable — fill them from raw columns (via the rename) or a supplementary catalog, not from `resolve_molecules`. |
+| Controls | Identify `DMSO`/`vehicle` with `is_control_label`; their structural columns stay null. Set a control-type field with `detect_negative_control_type` only if the schema has one. |
+| Finalize | `DropColumn` any raw alias/QC columns that map to no schema field. |
+
+For a molecule *feature* registry rather than a perturbation registry, the same fan-out fills the structural columns from the identifier column; the only difference is that control/perturbation status is a perturbation-layer concern that does not arise for features.

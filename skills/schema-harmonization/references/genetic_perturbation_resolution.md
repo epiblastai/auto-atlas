@@ -2,8 +2,6 @@
 
 Resolve genetic perturbation targets and their associated fields — the reagents, target genes, genomic locations, control status, and perturbation modality that describe what was perturbed in each row. These typically live in collection-level library tables or per-accession reagent manifests.
 
-For resolving gene identifiers themselves (feature/`var`-level symbol and Ensembl ID canonicalization of an expression matrix), see **references/gene_resolution.md** instead.
-
 ## Task description
 
 The expected input is a LanceDB URL and table name along with a target homeobox schema file. The name of the table must correspond to one of the schema classes in the provided file.
@@ -33,6 +31,9 @@ This reference is designed to guide you through the specific resolution consider
 - **Don't guess required guide-level fields.** If the schema requires a guide sequence, coordinates, or strand and the data lacks them, stop and ask the user rather than fabricating values unless the user explicitly approves nulls.
 - **Deduplicate before BLAT.** Guide sequences repeat across many rows and BLAT is rate-limited — resolve the distinct set, then map results back.
 - **Ambiguity → ask.** If delimiters, control labels, or join keys are ambiguous, ask the user instead of guessing.
+- **BLAT is the assembly-safe source for coordinates.** A reagent ID often encodes a position, but in the design assembly (commonly hg19) — putting those numbers in a GRCh38 schema is silently wrong. Re-resolving guides via BLAT lands every field in one assembly. Only parse coordinates out of identifiers once you have confirmed the assembly matches the schema.
+- **Keep authoritative existing annotation.** When a library already annotates design intent (e.g. `intended_gene_name`/`intended_ensembl_gene_id`), prefer it over re-derivation — genomic overlap from `resolve_guide_sequences` is a re-derivation, the library column is the intent — and only resolve the fields the data lacks.
+- **Leftover raw columns are dropped at finalization.** Raw QC and reagent-pair columns that map to no schema field are removed by `DropColumn` in the finalization step, not during resolution.
 
 ## Tools
 
@@ -66,7 +67,7 @@ Each returns a `ResolutionReport` (`total`, `resolved`, `unresolved`, `ambiguous
 
 **Only `resolve_genes` and `resolve_guide_sequences` are registered with `apply_resolution_pass.py`.** `annotate_genomic_coordinates` is a custom Python step.
 
-**Applying resolver output — the single-field caveat.** `resolve_genes` maps cleanly onto the script: one canonical field, one `--resolution-field-name`, one `ReplaceValue` pass (exactly as in **references/gene_resolution.md**). Guide and coordinate resolution instead produce **many correlated fields from one expensive, rate-limited call**, so driving the single-column script once per field would re-run BLAT each time. Use **fan-out** instead — resolve the distinct guides once and write every field in a single keyed `MergeColumns` merge, either via the script's `--fanout` mode or `ResolutionReport.propose_keyed_columns` in a custom transaction. See the fan-out section of **references/auditable_curation.md**.
+**Applying resolver output — the single-field caveat.** `resolve_genes` maps cleanly onto the script: one canonical field, one `--resolution-field-name`, one `ReplaceValue` pass. Guide and coordinate resolution instead produce **many correlated fields from one expensive, rate-limited call**, so driving the single-column script once per field would re-run BLAT each time. Use **fan-out** instead — resolve the distinct guides once and write every field in a single keyed `MergeColumns` merge, either via the script's `--fanout` mode or `ResolutionReport.propose_keyed_columns` in a custom transaction.
 
 ```python
 # Resolve by guide RNA sequence — dedupe first, BLAT is rate-limited
@@ -181,10 +182,4 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
   --organism human
 ```
 
-Notes that generalize:
-
-- **BLAT is the assembly-safe source for coordinates.** Library `sgID`s often encode a position, but in the design assembly (commonly hg19) — putting those numbers in a GRCh38 schema is silently wrong. Re-resolving guides via BLAT lands every field in one assembly. Only parse coordinates out of identifiers when you have confirmed the assembly matches the schema.
-- **Drop the leftovers at finalization.** Raw QC and pair-id columns that map to no schema field (`unique sgRNA pair ID`, `transcript`, duplicate-flag columns) are removed by `DropColumn` in the finalization step, not during alignment.
-- **Controls are not perturbations.** `non-targeting` rows are excluded from the fan-out's resolution rows, so their `target_*` columns stay null; their `intended_gene_name`/`intended_ensembl_gene_id` carried the literal `"non-targeting"` from the raw column and should be nulled (a `ReplaceValue` on those columns). Use `detect_negative_control_type()` to populate a control-type field if the schema has one.
-- **Dedupe before BLAT.** The fan-out resolves the distinct guide set; duplicate guides across rows are all updated by the keyed merge.
-- **Keep the library's gene annotation.** `resolve_guide_sequences` also returns `intended_gene_name`/`intended_ensembl_gene_id` from genomic overlap; do **not** map those into the fan-out when the library already annotated design intent — overlap is a re-derivation, the library column is the intent.
+In this example `non-targeting` rows are excluded from the fan-out's resolution rows, so their `target_*` columns stay null; their `intended_gene_name`/`intended_ensembl_gene_id` carried the literal `"non-targeting"` from the raw column and should be nulled (a `ReplaceValue` on those columns). Use `detect_negative_control_type()` to populate a control-type field if the schema has one.
