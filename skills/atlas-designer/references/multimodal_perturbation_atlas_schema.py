@@ -14,6 +14,7 @@ from homeobox.schema import (
     HoxBaseSchema,
     OntologyAlignedField,
     PointerField,
+    PolymorphicForeignKeyField,
     StableUIDBaseSchema,
     StableUIDField,
     _iter_pointer_annotations,
@@ -466,10 +467,17 @@ class CellIndex(HoxBaseSchema):
 
     # Cumulative lists of all the perturbations effected on a cell. Could be
     # combinatorial CRISPR guides, or a small molecule and a CRISPR guide, or
-    # any other such combination. Lists must have exactly matching lengths
-    # UIDs and types go together to specify foreign keys. The uid is a foreign
-    # key value and the perturbation type determines which table it is a key in.
-    perturbation_uids: list[str] | None
+    # any other such combination. Lists must have exactly matching lengths.
+    # UIDs and types go together: the type selects which perturbation table
+    # the uid refers to.
+    perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+        type_field="perturbation_types",
+        variants={
+            "small_molecule": SmallMoleculeSchema,
+            "genetic_perturbation": GeneticPerturbationSchema,
+            "biologic_perturbation": BiologicPerturbationSchema,
+        },
+    )
     perturbation_types: list[PerturbationType] | None  # Uses the PerturbationType enum
     # Concentrations for the perturbation in micromolar, if applicable, else use -1
     # to keep the lists equally long

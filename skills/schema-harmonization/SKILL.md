@@ -48,6 +48,7 @@ Every op requires `column` and `tool`. Also set provenance when you have it: `re
 
 Resolution-pass script (one resolver, one column; `--list-tools` for names like `resolve_genes`, `resolve_cell_types`):
 
+<!---TODO: Add a script mode to this script so that resolution fails and we raise to the user the issue. Also possible, that strict mode could be a parameter of a field declaration.-->
 ```bash
 python skills/schema-harmonization/scripts/apply_resolution_pass.py \
   <path/to/lance_db> \
@@ -82,7 +83,7 @@ This is stricter than the value-resolution rule below: it covers every field inc
 
 **Out of scope: automatically generated columns.** Do not populate `uid`, `dataset_uid`, or other auto-generated/derived columns. These are deterministic functions of the data and schema — no decision or source to record — so they do not need to be covered in the audit trail. A downstream finalization step will assign them and validate the table exactly matches the schema. Harmonization stops at aligning columns and resolving values.
 
-**Out of scope: foreign key columns.** Do not populate columns that are marked as `ForeignKeyField` or `PolymorphicForeignKeyField`. These cannot be determined accurately until all tables in a collection have been harmonized to their schemas.
+**Foreign keys: record the join key, do not fill the uid.** Do not populate the uid values in `ForeignKeyField` or `PolymorphicForeignKeyField` columns — those cannot be determined until the whole collection is harmonized and are assigned by the downstream finalization step. What harmonization *does* own is recording the natural join key that links each foreign key to its target, as a standardized `*_join` column, so finalization can resolve it. See **references/foreign_key_join_keys.md** for how to identify, validate, and name these keys.
 
 ## Resolving values
 
