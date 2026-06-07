@@ -166,9 +166,7 @@ class DatasetSchema(DatasetSchema):
     disease: list[str] | None  # ["ALS", "healthy"] for case-control
 
 
-class DonorSchema(LanceModel):
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
+class DonorSchema(StableUIDBaseSchema):
     age_years: float | None = None
     sex: str | None = None
     ethnicity: str | None = OntologyAlignedField.declare(ontology_name="HANCESTRO")
@@ -398,14 +396,12 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
         return self
 
 
-class BiologicPerturbationSchema(LanceModel):
+class BiologicPerturbationSchema(StableUIDBaseSchema):
     """A biologic agent (protein, cytokine, antibody, etc.) applied to cells.
 
     Biologic perturbations are identified by the agent's name and, where
     possible, a UniProt accession for the protein involved.
     """
-
-    uid: str = Field(default_factory=make_uid)
 
     # Biologic identity
     biologic_name: str
