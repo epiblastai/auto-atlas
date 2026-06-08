@@ -3,15 +3,15 @@
 Finalization turns independently-harmonized tables into a linked, schema-conformant
 collection. It runs on the **whole collection at once**, in dependency order: a
 registry-key target must have its ``uid`` assigned before any table referencing it
-is filled. The order is derived from the schema's own FK declarations, never
-hard-coded.
+is filled. The order is derived from the schema's own registry-key declarations,
+never hard-coded.
 
 Per table, in order:
 
-1. assign ``uid``                       (assign_uids)
+1. assign ``uid`` / ``zarr_group``      (assign_uids)
 2. stamp ``dataset_uid``  (obs only)    (set_dataset_uid)
 3. populate registry keys                (populate_registry_keys)
-4. ``compute_auto_fields``  (obs only)  — derived columns, after FKs
+4. ``compute_auto_fields``  (obs only)  — derived columns, after registry keys
 5. validate against the schema class    (validate_tables), as a final sweep
 
     python finalize_collection.py <collection_root> --schema <schema.py> [--dry-run]
@@ -86,8 +86,8 @@ def drop_target_join_columns(
 
     The referencing-side ``*_join`` columns are dropped by populate_registry_keys as
     each table is filled, but a target's join column is shared by all tables that
-    reference it, so it can only be removed here — after the whole collection's FKs
-    are resolved.
+    reference it, so it can only be removed here — after the whole collection's
+    registry keys are resolved.
     """
     target_classes: set[str] = set()
     for fks in info.scalar_fks.values():

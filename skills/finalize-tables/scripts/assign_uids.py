@@ -1,14 +1,16 @@
-"""Assign ``uid`` to finalized tables.
+"""Assign the automatic row key to finalized tables.
 
 For ``StableUIDBaseSchema`` tables (feature registries and entity/registry tables)
 ``uid`` is derived from the declared ``StableUIDField`` where present and random
 otherwise — ``cls.compute_stable_uids`` handles both. Obs (``HoxBaseSchema``)
-tables get a random ``uid`` per row. Tables with no ``uid`` field (e.g. pure
-relationship tables) are skipped.
+tables get a random ``uid`` per row. ``DatasetSchema`` tables have no ``uid``;
+their per-row key is ``zarr_group`` — one random value per feature-space row,
+created here since the staging scaffold omits it. Other tables with no ``uid``
+field (e.g. pure relationship tables) are skipped.
 
-Assignment is idempotent: existing non-empty uids are preserved, so re-running
-never reshuffles random uids. The new column is written straight to Lance — uid
-is a deterministic/auto column, not an audited curation decision.
+Assignment is idempotent: existing non-empty keys are preserved, so re-running
+never reshuffles random ones. The new column is written straight to Lance — these
+are deterministic/auto columns, not audited curation decisions.
 
     python assign_uids.py <collection_root> --schema <schema.py> [--table CellIndex] [--dry-run]
 """
@@ -19,7 +21,7 @@ import argparse
 import os
 
 import pyarrow as pa
-from homeobox.schema import make_uid
+from homeobox.schema import DatasetSchema, make_uid
 
 from auto_atlas.types import SchemaInfo, TableRef
 from auto_atlas.util import (
@@ -35,8 +37,40 @@ from auto_atlas.util import (
 _STABLE_KINDS = {"feature_registry", "entity"}
 
 
+def assign_zarr_groups_for_table(ref: TableRef, *, dry_run: bool = False) -> int:
+    """Assign the per-row ``zarr_group`` key on a ``DatasetSchema`` table.
+
+    ``zarr_group`` is the dataset table's automatic key — one unique value per row
+    (one modality write per feature space), the ``DatasetSchema`` analogue of a
+    random ``uid``. The staging scaffold omits the column, so this both creates it
+    and fills any empty cell, idempotently (existing values are preserved).
+    """
+    table = read_arrow(ref)
+    n = table.num_rows
+    existing = (
+        [join_key(v) for v in table.column("zarr_group").to_pylist()]
+        if "zarr_group" in table.column_names
+        else [None] * n
+    )
+    new_vals = [v if v is not None else make_uid() for v in existing]
+    changed = sum(1 for old, new in zip(existing, new_vals, strict=True) if old != new)
+    print(f"  {ref.table_name} (dataset): {changed}/{n} zarr_group(s) assigned")
+    if changed and not dry_run:
+        table = set_arrow_column(table, "zarr_group", pa.array(new_vals, type=pa.string()))
+        overwrite_table(ref, table)
+    return changed
+
+
 def assign_uids_for_table(ref: TableRef, info: SchemaInfo, *, dry_run: bool = False) -> int:
-    """Assign uids on one table. Returns the number of rows that received a new uid."""
+    """Assign a table's automatic row key. Returns the number of rows that changed.
+
+    ``DatasetSchema`` tables key on ``zarr_group`` rather than ``uid`` and are
+    handled separately; every other table keys on ``uid``.
+    """
+    cls = info.live_class(ref.class_name)
+    if cls is not None and issubclass(cls, DatasetSchema):
+        return assign_zarr_groups_for_table(ref, dry_run=dry_run)
+
     kind = info.kinds.get(ref.class_name)
     if not info.has_uid_field(ref.class_name):
         print(f"  {ref.table_name}: no uid field ({kind}); skipped")

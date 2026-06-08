@@ -81,9 +81,11 @@ Before leaving any field null:
 
 This is stricter than the value-resolution rule below: it covers every field including ones with no resolver.
 
-**Out of scope: automatically generated columns.** Do not populate `uid`, `dataset_uid`, or other auto-generated/derived columns. These are deterministic functions of the data and schema — no decision or source to record — so they do not need to be covered in the audit trail. A downstream finalization step will assign them and validate the table exactly matches the schema. Harmonization stops at aligning columns and resolving values.
+**The dataset table.** Each dataset directory carries a `DatasetSchema` table (one row per feature space) whose descriptive metadata and publication link harmonization fills, while leaving its automatic and `SummaryField` columns alone. See **references/dataset_resolution.md**.
 
 **Registry keys: record the join key, do not fill the uid.** Do not populate the uid values in `RegistryKeyField` or `PolymorphicRegistryKeyField` columns — those cannot be determined until the whole collection is harmonized and are assigned by the downstream finalization step. What harmonization *does* own is recording the natural join key that links each registry key to its target, as a standardized `*_join` column, so finalization can resolve it. See **references/registry_key_join_keys.md** for how to identify, validate, and name these keys.
+
+**Out of scope: automatically generated and summary columns.** Do not populate `uid`, `dataset_uid`, `zarr_group`, or other auto-generated/derived columns. These are deterministic functions of the data and schema — no decision or source to record — so they do not need to be covered in the audit trail. A downstream finalization step assigns them and validates the table exactly matches the schema. Likewise do not fill any field the schema marks with `SummaryField`: these are aggregates of a target table computed at ingestion time, after the obs rows are final. Harmonization stops at aligning columns and resolving values.
 
 ## Resolving values
 

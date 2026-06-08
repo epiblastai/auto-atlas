@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 import pandas as pd
-from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField
+from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField, SummaryField
 
 from auto_atlas.curation.types import MergeColumns, ReplaceValue
 
@@ -254,12 +254,18 @@ class SchemaInfo:
     markers declared on it. ``dataset_uid`` (a registry key whose ``target_field``
     is not ``uid``) is omitted: it is stamped from ``collection.json``, not
     resolved by a join.
+
+    ``summary_fields`` maps a class name to the ``SummaryField`` markers declared
+    on it — fields whose value is an aggregate of a target table's column. They
+    are filled downstream at ingestion time, so harmonization leaves them
+    untouched and finalization keeps them at their schema default.
     """
 
     module: Any
     kinds: dict[str, str]  # class_name -> parser kind (obs/dataset/entity/...)
     scalar_fks: dict[str, list[RegistryKeyField]] = field(default_factory=dict)
     poly_fks: dict[str, list[PolymorphicRegistryKeyField]] = field(default_factory=dict)
+    summary_fields: dict[str, list[SummaryField]] = field(default_factory=dict)
 
     def live_class(self, class_name: str) -> type | None:
         return getattr(self.module, class_name, None)
@@ -267,6 +273,10 @@ class SchemaInfo:
     def has_uid_field(self, class_name: str) -> bool:
         cls = self.live_class(class_name)
         return bool(cls is not None and "uid" in getattr(cls, "model_fields", {}))
+
+    def summary_field_names(self, class_name: str) -> set[str]:
+        """Names of the class's summary fields (filled at ingestion, not here)."""
+        return {s.field_name for s in self.summary_fields.get(class_name, [])}
 
 
 @dataclass
