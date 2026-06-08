@@ -14,6 +14,7 @@ from homeobox.schema import (
     HoxBaseSchema,
     OntologyAlignedField,
     PointerField,
+    PolymorphicForeignKeyField,
     StableUIDBaseSchema,
     StableUIDField,
     _iter_pointer_annotations,
@@ -150,7 +151,7 @@ class PublicationSectionSchema(LanceModel):
 # ---------------------------------------------------------------------------
 
 
-class DatasetSchema(DatasetSchema):
+class AtlasDatasetSchema(DatasetSchema):
     publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
     # Database from which the dataset was downloaded, if applicable
     accession_database: str | None
@@ -160,15 +161,14 @@ class DatasetSchema(DatasetSchema):
     dataset_description: str | None
 
     # High-level metadata fields that are useful for searching and grouping datasets.
-    organism: list[str] | None  # ["human", "mouse"] for barnyard
-    tissue: list[str] | None  # ["cortex", "hippocampus"] for multi-region
-    cell_line: list[str] | None  # ["A549", "MCF7", "K562"] for village-in-a-dish
-    disease: list[str] | None  # ["ALS", "healthy"] for case-control
+    # These can be derived from the unique values in CellIndex records within a dataset
+    organism: list[str] | None
+    tissue: list[str] | None
+    cell_line: list[str] | None
+    disease: list[str] | None
 
 
-class DonorSchema(LanceModel):
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
+class DonorSchema(StableUIDBaseSchema):
     age_years: float | None = None
     sex: str | None = None
     ethnicity: str | None = OntologyAlignedField.declare(ontology_name="HANCESTRO")
@@ -398,14 +398,12 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
         return self
 
 
-class BiologicPerturbationSchema(LanceModel):
+class BiologicPerturbationSchema(StableUIDBaseSchema):
     """A biologic agent (protein, cytokine, antibody, etc.) applied to cells.
 
     Biologic perturbations are identified by the agent's name and, where
     possible, a UniProt accession for the protein involved.
     """
-
-    uid: str = Field(default_factory=make_uid)
 
     # Biologic identity
     biologic_name: str
@@ -470,10 +468,17 @@ class CellIndex(HoxBaseSchema):
 
     # Cumulative lists of all the perturbations effected on a cell. Could be
     # combinatorial CRISPR guides, or a small molecule and a CRISPR guide, or
-    # any other such combination. Lists must have exactly matching lengths
-    # UIDs and types go together to specify foreign keys. The uid is a foreign
-    # key value and the perturbation type determines which table it is a key in.
-    perturbation_uids: list[str] | None
+    # any other such combination. Lists must have exactly matching lengths.
+    # UIDs and types go together: the type selects which perturbation table
+    # the uid refers to.
+    perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+        type_field="perturbation_types",
+        variants={
+            "small_molecule": SmallMoleculeSchema,
+            "genetic_perturbation": GeneticPerturbationSchema,
+            "biologic_perturbation": BiologicPerturbationSchema,
+        },
+    )
     perturbation_types: list[PerturbationType] | None  # Uses the PerturbationType enum
     # Concentrations for the perturbation in micromolar, if applicable, else use -1
     # to keep the lists equally long

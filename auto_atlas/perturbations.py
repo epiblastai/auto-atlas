@@ -4,10 +4,10 @@ No external API calls — pure parsing and classification logic.
 """
 
 import re
-from enum import Enum
+from enum import StrEnum
 
 
-class GeneticPerturbationType(str, Enum):
+class GeneticPerturbationType(StrEnum):
     """The class of genetic perturbation reagent."""
 
     CRISPR_KO = "CRISPRko"

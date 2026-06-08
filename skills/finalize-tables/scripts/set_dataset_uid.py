@@ -10,7 +10,7 @@ feature spaces in ``collection.json`` determine the obs table name(s), so all
 feature spaces are handled in one go.
 
 Usage:
-    python skills/schema-harmonization/scripts/set_dataset_uid.py <collection_root> \\
+    python skills/finalize-tables/scripts/set_dataset_uid.py <collection_root> \\
         --dataset HepG2 --obs-class CellIndex
 
     python ... --dry-run   # audit only, no Lance writes
