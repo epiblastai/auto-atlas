@@ -8,6 +8,7 @@ The `DatasetSchema` row describes the dataset as a whole, so the same dataset-le
 
 The free-text and accession-style descriptors of the dataset — for example an accession database and id, and a dataset description — come from the dataset's own metadata: the collection/dataset manifest, an accession record (e.g. a GEO series or sample), or publication text coalesced into the package. Fill them with audited ops, under the same discipline as any nullable field:
 
+<!---TODO: This is overfit to a particular example. We should not resolve publication related fields in this skill. Instead we need to craft a custom publication harmonization skill that fills any publication related tables and also handles the filling of publication-related columns in dataset-level tables. Our assertion is that there is 1 publication per collection s.t. we can fill values in other tables trivially with AddColumn or SetColumn.-->
 ## 2. The publication registry key — record its join key
 
 The dataset's link to its publication row is a registry key (`publication_uid`). As with every registry key, harmonization does **not** fill the uid; it records the natural join key so finalization can resolve it once uids exist:
