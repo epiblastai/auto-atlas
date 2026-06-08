@@ -21,21 +21,6 @@ Fetch publication metadata from PubMed and full text from PMC Open Access. Produ
 
 **Column naming:** No `validated_` prefix. Use schema field names directly.
 
-## Reporting
-
-Each run must write a markdown report to `resolver_reports/` in the working directory.
-
-- Create the directory if it does not exist.
-- Default report path: `resolver_reports/publication-resolver.md`
-- Overwrite the report for the current run unless the caller asks for a different naming scheme.
-- Include:
-  - input identifier(s)
-  - output file path(s)
-  - PMID/DOI/title/journal/date found
-  - whether PMC full text was available
-  - number of text sections produced
-  - schema field completeness audit, including reasons for blanks
-
 ## Scripts
 
 Run these via Bash from the **repository root**.
@@ -43,7 +28,6 @@ Run these via Bash from the **repository root**.
 | Script | Usage | Purpose |
 |--------|-------|---------|
 | `scripts/write_publication_parquet.py` | `python skills/publication-resolver/scripts/write_publication_parquet.py <data_dir> <schema_module> <pub_schema_class> [--section-schema <section_class>] [--pmid PMID] [--title TITLE]` | **Primary.** Fetch publication metadata, write validated parquet files + publication.json |
-| `scripts/write_publication_json.py` | `python skills/publication-resolver/scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | **Legacy.** Write only publication.json (no schema validation or parquet) |
 
 ### `write_publication_parquet.py`
 

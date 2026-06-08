@@ -978,23 +978,14 @@ def search_pubmed_by_title(title: str) -> int | None:
 
 
 def fetch_publication_metadata(pmid: str | int) -> dict:
-    """Fetch publication metadata as a dict (backward-compatible).
+    """Fetch publication metadata as a dict.
 
     Returns a dict with keys: pmid, doi, title, journal, publication_date,
-    authors, full_text, text_source. The full_text field concatenates all
-    sections with headers.
+    authors, text_data, text_source. The text_data field contains parallel
+    lists of section_title and section_text (one entry per section).
     """
     pub = fetch_publication(str(pmid))
     text_data = fetch_publication_text(pub.pmid, pub.pmc_id)
-
-    # Build full_text string from sections
-    parts: list[str] = []
-    for section in text_data.sections:
-        if section.section_title:
-            parts.append(f"## {section.section_title}\n\n{section.section_text}")
-        else:
-            parts.append(section.section_text)
-    full_text = "\n\n".join(parts)
 
     return {
         "pmid": pub.pmid,
@@ -1003,6 +994,9 @@ def fetch_publication_metadata(pmid: str | int) -> dict:
         "journal": pub.journal,
         "publication_date": (pub.publication_date.isoformat() if pub.publication_date else None),
         "authors": pub.authors,
-        "full_text": full_text,
+        "text_data": {
+            "section_title": [section.section_title for section in text_data.sections],
+            "section_text": [section.section_text for section in text_data.sections],
+        },
         "text_source": text_data.source,
     }
