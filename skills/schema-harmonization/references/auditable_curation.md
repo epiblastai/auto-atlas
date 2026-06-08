@@ -86,7 +86,7 @@ op = report.propose_keyed_columns(
 )  # -> one MergeColumns, or None if nothing resolved
 ```
 
-One row is emitted per key that resolved at least one mapped field; keys that resolve nothing are skipped (their target rows stay null — exactly what you want for controls). Map only columns you may write — skip `ForeignKeyField` targets, which are populated after the whole collection is harmonized. **Target columns must already exist** — null-initialize missing ones with `AddColumn(data_type=...)` earlier in the same transaction. Provenance is batch-level: the per-key mapping lives in the op's `rows` (the `--fanout` script wires all of this up for you, including auto-creating the columns).
+One row is emitted per key that resolved at least one mapped field; keys that resolve nothing are skipped (their target rows stay null — exactly what you want for controls). Map only columns you may write — skip `RegistryKeyField` targets, which are populated after the whole collection is harmonized. **Target columns must already exist** — null-initialize missing ones with `AddColumn(data_type=...)` earlier in the same transaction. Provenance is batch-level: the per-key mapping lives in the op's `rows` (the `--fanout` script wires all of this up for you, including auto-creating the columns).
 
 ## Resolution-script constraints
 

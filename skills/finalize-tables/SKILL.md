@@ -1,6 +1,6 @@
 ---
 name: finalize-tables
-description: Finalize harmonized Lance tables in a data package — assign automatic columns (uid, dataset_uid, derived fields), connect tables by populating ForeignKeyFields, and validate every table against its target homeobox schema.
+description: Finalize harmonized Lance tables in a data package — assign automatic columns (uid, dataset_uid, derived fields), connect tables by populating RegistryKeyFields, and validate every table against its target homeobox schema.
 ---
 
 # Finalize tables
@@ -34,7 +34,7 @@ For every table: all automatic columns assigned, all foreign keys populated, tra
 
 ## Whole-collection order is a DAG
 
-Foreign keys impose a dependency order: a target table must have its `uid` assigned before any table referencing it can be filled. Enumerate every `ForeignKeyField` / `PolymorphicForeignKeyField` from the schema (the `target_schema` is declared on the field) to build the reference graph, then finalize tables in dependency order: targets first, referencing tables last. The order is derived from the schema, not hard-coded.
+Foreign keys impose a dependency order: a target table must have its `uid` assigned before any table referencing it can be filled. Enumerate every `RegistryKeyField` / `PolymorphicRegistryKeyField` from the schema (the `target_schema` is declared on the field) to build the reference graph, then finalize tables in dependency order: targets first, referencing tables last. The order is derived from the schema, not hard-coded.
 
 A single entrypoint drives the whole pass:
 
@@ -55,7 +55,7 @@ python skills/finalize-tables/scripts/set_dataset_uid.py \
 
 Pass the obs **schema class name** (not necessarily a concrete table name): the dataset's feature spaces in `collection.json` determine the obs table name(s) — bare `CellIndex` for a single feature space, `CellIndex_<feature_space>` for several. Only obs tables carry `dataset_uid`.
 
-## Populating ForeignKeyField
+## Populating RegistryKeyField
 
 A foreign key links a row to a row in a *target_schema* table by that target's `uid`. The target row was assigned a `uid` (often random) during finalization, so the link cannot be recomputed from content — it must be resolved by **joining on a natural key** shared between the two tables.
 
@@ -71,7 +71,7 @@ Finalization discovers these `*_join` columns by naming convention; it does not 
 ### Resolving and filling
 
 ```bash
-python skills/finalize-tables/scripts/populate_foreign_keys.py <collection_root> \
+python skills/finalize-tables/scripts/populate_registry_keys.py <collection_root> \
   --schema <schema.py> --table CellIndex --dry-run
 ```
 
@@ -80,7 +80,7 @@ For each foreign key on the table the script:
 1. Reads the referencing `*_join` column and the matching key on the (already uid-assigned) target table.
 2. Equi-joins natural key → target `uid`, mapping each key to exactly one target row.
 3. **Verifies coverage**: the join key is unique in the target, and every non-null source key matches exactly one target row. It reports matched / unmatched / total and **fails loud on any unmatched key** — never silently nulls (consistent with harmonization's nullable-field rule). Unmatched keys are investigated, not dropped.
-4. Writes the resolved `uid`(s) into the foreign key column (scalar, list, or — for `PolymorphicForeignKeyField` — merged across the per-variant join columns into the aligned lists), directly to Lance.
+4. Writes the resolved `uid`(s) into the foreign key column (scalar, list, or — for `PolymorphicRegistryKeyField` — merged across the per-variant join columns into the aligned lists), directly to Lance.
 5. Drops the transient `*_join` column once the fill is verified.
 
 ## Scripts
@@ -90,8 +90,8 @@ For each foreign key on the table the script:
 | `finalize_collection.py` | collection root, schema | DAG-ordered entrypoint; runs every step on every table in dependency order, then the target-join cleanup, the audited leftover-column drop, and the validation sweep. |
 | `assign_uids.py` | collection root, schema, optional `--table` | Assign `uid` per table (stable vs random per the schema declaration); idempotent — preserves existing uids. |
 | `set_dataset_uid.py` | collection root, `--dataset`, `--obs-class` | Stamp the dataset's `uid` onto its obs table(s) as an audited broadcast. |
-| `populate_foreign_keys.py` | collection root, schema, optional `--table` | Resolve `*_join` columns against target `uid`s, verify coverage (fail-loud on any unmatched key), fill scalar and position-aligned polymorphic FK columns, drop the referencing-side join columns. |
+| `populate_registry_keys.py` | collection root, schema, optional `--table` | Resolve `*_join` columns against target `uid`s, verify coverage (fail-loud on any unmatched key), fill scalar and position-aligned polymorphic FK columns, drop the referencing-side join columns. |
 | `drop_leftover_columns.py` | collection root, schema, optional `--table` | Drop every column that is not a field of its schema class through an audited `DropColumn` (source data; recorded, not silent). Run after foreign keys and the `*_join` cleanup. |
 | `validate_tables.py` | collection root, schema, optional `--table`, `--limit` | Structural + per-row validation of every table against its schema class; exits non-zero and reports any column or value that does not conform. |
 
-Shared logic (schema loading via `homeobox.parser`, table discovery, dependency ordering, Arrow read/mutate/overwrite) lives in the main library: the `SchemaInfo` / `TableRef` dataclasses in `auto_atlas.types` and the functions in `auto_atlas.util`. Foreign keys are described by homeobox's own `ForeignKeyField` / `PolymorphicForeignKeyField` markers, not local copies. The deterministic columns (uid / derived / FK fills) and finalization's own `*_join` scaffolding are written directly to Lance; the two writes that touch source-derived data — `set_dataset_uid` and `drop_leftover_columns` — go through the `CurationApplicator`.
+Shared logic (schema loading via `homeobox.parser`, table discovery, dependency ordering, Arrow read/mutate/overwrite) lives in the main library: the `SchemaInfo` / `TableRef` dataclasses in `auto_atlas.types` and the functions in `auto_atlas.util`. Foreign keys are described by homeobox's own `RegistryKeyField` / `PolymorphicRegistryKeyField` markers, not local copies. The deterministic columns (uid / derived / FK fills) and finalization's own `*_join` scaffolding are written directly to Lance; the two writes that touch source-derived data — `set_dataset_uid` and `drop_leftover_columns` — go through the `CurationApplicator`.

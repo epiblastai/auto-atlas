@@ -93,24 +93,24 @@ relationships. None have any runtime effect today: they are not written to
 Arrow metadata and Homeobox does not enforce them as constraints, though
 future versions may validate or enforce them.
 
-**`ForeignKeyField`** — a scalar reference to another schema field:
+**`RegistryKeyField`** — a scalar reference to another schema field:
 
 ```python
-publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
-target_chromosome: str | None = ForeignKeyField.declare(
+publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
+target_chromosome: str | None = RegistryKeyField.declare(
     target_schema=ReferenceSequenceSchema,
     target_field="genbank_accession",
     default=None,
 )
 ```
 
-**`PolymorphicForeignKeyField`** — like `ForeignKeyField`, but the target schema
+**`PolymorphicRegistryKeyField`** — like `RegistryKeyField`, but the target schema
 is chosen at runtime by a parallel discriminator column rather than fixed at
 declaration time. Use it when the same value column can refer to different
 tables depending on another field:
 
 ```python
-perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+perturbation_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
     type_field="perturbation_types",
     variants={
         "small_molecule": SmallMoleculeSchema,
@@ -139,14 +139,14 @@ pubchem_cid: str | None = CrossReferenceField.declare(database_name="pubchem")
 ```
 
 Name scalar references `*_uid` where possible. Prefer
-`PolymorphicForeignKeyField` over hand-rolling a separate type column for
+`PolymorphicRegistryKeyField` over hand-rolling a separate type column for
 polymorphic references; when you must, comment the relationship explicitly.
 
 Import all four from `homeobox.schema`:
 
 ```python
 from homeobox.schema import (
-    ForeignKeyField, PolymorphicForeignKeyField,
+    RegistryKeyField, PolymorphicRegistryKeyField,
     OntologyAlignedField, CrossReferenceField,
 )
 ```

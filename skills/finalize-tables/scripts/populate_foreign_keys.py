@@ -4,7 +4,7 @@ Harmonization records, on each referencing table, a standardized join column per
 foreign key (and the matching key on the target). Finalization equi-joins those
 keys to the (already assigned) target ``uid`` and fills the foreign-key field.
 
-Conventions (written upstream, see schema-harmonization references/foreign_key_join_keys.md):
+Conventions (written upstream, see schema-harmonization references/registry_key_join_keys.md):
 
 - Referencing scalar FK ``field``:        ``{field}_{TargetSchema}_join``  (scalar)
 - Target side:                            ``{TargetSchema}_join``           (scalar)
@@ -19,7 +19,7 @@ match exactly one target row. Any unmatched key fails loud — keys are
 investigated, never silently nulled. Transient ``*_join`` columns are dropped
 once the fill is verified.
 
-    python populate_foreign_keys.py <collection_root> --schema <schema.py> \\
+    python populate_registry_keys.py <collection_root> --schema <schema.py> \\
         [--table CellIndex] [--dry-run]
 """
 
@@ -29,7 +29,7 @@ import argparse
 import os
 
 import pyarrow as pa
-from homeobox.schema import ForeignKeyField, PolymorphicForeignKeyField
+from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField
 
 from auto_atlas.types import SchemaInfo, TableRef
 from auto_atlas.util import (
@@ -106,7 +106,7 @@ def build_target_key_map(
 
 
 def fill_scalar_fk(
-    table: pa.Table, fk: ForeignKeyField, key_map: dict[str, str]
+    table: pa.Table, fk: RegistryKeyField, key_map: dict[str, str]
 ) -> tuple[pa.Table, str]:
     """Fill a scalar FK column from its (present) join column. Returns (table, join_col)."""
     join_col = f"{fk.field_name}_{fk.target_schema}_join"
@@ -134,7 +134,7 @@ def fill_scalar_fk(
 
 
 def fill_polymorphic_fk(
-    table: pa.Table, pfk: PolymorphicForeignKeyField, key_maps: dict[str, dict[str, str]]
+    table: pa.Table, pfk: PolymorphicRegistryKeyField, key_maps: dict[str, dict[str, str]]
 ) -> tuple[pa.Table, list[str]] | None:
     """Fill a polymorphic list FK position-by-position. Returns (table, join_cols) or None."""
     if pfk.type_field not in table.column_names:
@@ -270,7 +270,7 @@ def populate_fks_for_table(
         print(f"    (dry run — would drop {drop_cols} and write to Lance)")
 
 
-def populate_foreign_keys(
+def populate_registry_keys(
     collection_root: str,
     schema_path: str,
     *,
@@ -295,7 +295,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--table", default=None, help="Restrict to one table or class name")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    populate_foreign_keys(
+    populate_registry_keys(
         os.fspath(args.collection_root),
         os.fspath(args.schema),
         table=args.table,

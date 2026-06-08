@@ -13,7 +13,7 @@ from typing import Any
 import lancedb
 import pyarrow as pa
 from homeobox.parser import parse_schema_module
-from homeobox.schema import ForeignKeyField, PolymorphicForeignKeyField
+from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField
 
 from auto_atlas.types import SchemaInfo, TableRef
 
@@ -78,8 +78,8 @@ def load_schema_module(schema_path: str) -> Any:
 def load_schema_info(schema_path: str) -> SchemaInfo:
     """Load the schema module and derive the kinds map and foreign-key markers.
 
-    Foreign keys are returned as homeobox's own ``ForeignKeyField`` /
-    ``PolymorphicForeignKeyField`` markers. The parser flattens a polymorphic FK
+    Foreign keys are returned as homeobox's own ``RegistryKeyField`` /
+    ``PolymorphicRegistryKeyField`` markers. The parser flattens a polymorphic FK
     into one relationship per variant; those are recombined here into a single
     marker per field.
     """
@@ -91,34 +91,34 @@ def load_schema_info(schema_path: str) -> SchemaInfo:
         if table is not None:
             kinds[table["class_name"]] = table["kind"]
 
-    scalar_fks: dict[str, list[ForeignKeyField]] = {}
+    scalar_fks: dict[str, list[RegistryKeyField]] = {}
     # (source, field, type_field, target_field) -> {variant: target_schema}
     poly_acc: dict[tuple[str, str, str, str], dict[str, str]] = {}
 
     for rel in parsed.get("relationships", []):
         kind = rel["kind"]
         source = rel["source_table"]
-        if kind == "foreign_key":
+        if kind == "registry_key":
             target_field = rel.get("target_field", "uid")
             # ``dataset_uid`` is stamped separately from collection.json, not joined.
             if target_field != "uid":
                 continue
             scalar_fks.setdefault(source, []).append(
-                ForeignKeyField(
+                RegistryKeyField(
                     field_name=rel["source_field"],
                     target_schema=rel["target_schema"],
                     target_field=target_field,
                 )
             )
-        elif kind == "polymorphic_foreign_key":
+        elif kind == "polymorphic_registry_key":
             key = (source, rel["source_field"], rel["type_field"], rel.get("target_field", "uid"))
             poly_acc.setdefault(key, {})[rel["variant"]] = rel["target_schema"]
         # pointer_feature_registry relationships are zarr pointers, not uid FKs.
 
-    poly_fks: dict[str, list[PolymorphicForeignKeyField]] = {}
+    poly_fks: dict[str, list[PolymorphicRegistryKeyField]] = {}
     for (source, field_name, type_field, target_field), variants in poly_acc.items():
         poly_fks.setdefault(source, []).append(
-            PolymorphicForeignKeyField(
+            PolymorphicRegistryKeyField(
                 field_name=field_name,
                 type_field=type_field,
                 target_field=target_field,

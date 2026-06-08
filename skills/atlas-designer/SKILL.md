@@ -1,6 +1,6 @@
 ---
 name: atlas-designer
-description: Use when designing or writing a homeobox atlas schema.py file. Covers choosing HoxBaseSchema, FeatureBaseSchema, DatasetSchema, StableUIDBaseSchema, and LanceModel tables; declaring PointerField with feature_registry_schema, StableUIDField, and ForeignKeyField correctly; and producing schema code for a new atlas without writing ingestion scripts.
+description: Use when designing or writing a homeobox atlas schema.py file. Covers choosing HoxBaseSchema, FeatureBaseSchema, DatasetSchema, StableUIDBaseSchema, and LanceModel tables; declaring PointerField with feature_registry_schema, StableUIDField, and RegistryKeyField correctly; and producing schema code for a new atlas without writing ingestion scripts.
 ---
 
 # Atlas Designer
@@ -33,7 +33,7 @@ Official docs pages for homeobox:
    - optional schema maps such as `REGISTRY_SCHEMAS` and `FK_TABLE_SCHEMAS`
    - obs schema(s) subclassing `HoxBaseSchema`
    - optional materialized index/summary tables
-3. Include inline comments for every non-obvious biological meaning. Use `ForeignKeyField` for simple scalar foreign keys.
+3. Include inline comments for every non-obvious biological meaning. Use `RegistryKeyField` for simple scalar foreign keys.
 4. Add pydantic validators only for real invariants: enum membership, equal-length parallel lists, generated search strings, derived stable-UID fields, or deterministic materialized IDs.
 5. Validate the schema module by importing it and creating a temporary atlas with `create_or_open_atlas`.
 
@@ -116,14 +116,14 @@ For bulk DataFrame workflows, ensure the derived stable field is populated befor
 
 ## Foreign Keys
 
-Use `ForeignKeyField.declare(...)` for simple scalar references to another schema field. This stores lightweight Pydantic metadata for schema parsing and visualization; it is not stored in Arrow metadata and does not currently enforce constraints. Use `*_uid` names for references.
+Use `RegistryKeyField.declare(...)` for simple scalar references to another schema field. This stores lightweight Pydantic metadata for schema parsing and visualization; it is not stored in Arrow metadata and does not currently enforce constraints. Use `*_uid` names for references.
 
 Common examples:
 
 ```python
-publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
-donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
-target_chromosome: str | None = ForeignKeyField.declare(
+publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
+donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
+target_chromosome: str | None = RegistryKeyField.declare(
     target_schema=ReferenceSequenceSchema,
     target_field="genbank_accession",
     default=None,
@@ -183,7 +183,7 @@ from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema as HoxDatasetSchema,
     FeatureBaseSchema,
-    ForeignKeyField,
+    RegistryKeyField,
     HoxBaseSchema,
     PointerField,
     StableUIDBaseSchema,
@@ -205,7 +205,7 @@ class PublicationSchema(StableUIDBaseSchema):
 
 
 class AtlasDatasetSchema(HoxDatasetSchema):
-    publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
+    publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
     accession_database: str | None
     accession_id: str | None
     organism: str | None
@@ -228,7 +228,7 @@ class CellIndex(HoxBaseSchema):
     organism: str
     assay: str
     cell_type: str | None = None
-    donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
+    donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
 
     gene_expression: SparseZarrPointer | None = PointerField.declare(
         feature_space="gene_expression",
@@ -250,7 +250,7 @@ class CellIndex(HoxBaseSchema):
 - Feature registries subclass `FeatureBaseSchema`, not plain `LanceModel`.
 - Durable non-feature entity tables subclass `StableUIDBaseSchema` when deduplication matters.
 - Every schema has at most one `StableUIDField`.
-- Simple scalar relationships use `ForeignKeyField.declare(...)`; polymorphic/list references have clear companion type fields and comments.
+- Simple scalar relationships use `RegistryKeyField.declare(...)`; polymorphic/list references have clear companion type fields and comments.
 - Composite stable identities are explicit derived fields.
 - Foreign key-like fields are named `*_uid` or `*_uids`.
 - Dataset provenance fields live on a `DatasetSchema` subclass.
