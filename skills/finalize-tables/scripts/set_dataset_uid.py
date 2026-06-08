@@ -5,9 +5,9 @@ belongs to. That uid is one constant for the whole dataset (assigned on the
 ``Dataset`` and persisted in ``collection.json``), so it is a single broadcast
 ``AddColumn`` per obs table — unlike per-row ``uid``, which is handled downstream.
 
-Pass the obs *schema class name* (not a concrete table name): the dataset's
-feature spaces in ``collection.json`` determine the obs table name(s), so all
-feature spaces are handled in one go.
+Pass the obs *schema class name* (the concrete Lance table name). For multimodal
+datasets, run ``join_feature_space_obs.py`` first so per-feature-space tables
+are merged into the bare class name.
 
 Usage:
     python skills/finalize-tables/scripts/set_dataset_uid.py <collection_root> \\
@@ -39,22 +39,6 @@ LANCE_DB_DIR = "lance_db"
 DATASET_UID_COLUMN = "dataset_uid"
 
 
-def obs_table_name(obs_class: str, feature_space: str, n_feature_spaces: int) -> str:
-    """Obs table name for a feature space.
-
-    Mirrors ``stage_lance_tables.obs_table_name``: a single-feature-space dataset
-    uses the bare class name; multi-feature-space datasets suffix the space.
-    """
-    if n_feature_spaces > 1:
-        return f"{obs_class}_{feature_space}"
-    return obs_class
-
-
-def feature_spaces_for(files: list[dict]) -> list[str]:
-    spaces = {entry["feature_space"] for entry in files if entry.get("feature_space")}
-    return sorted(spaces)
-
-
 def set_dataset_uid(
     collection_root: str,
     *,
@@ -78,45 +62,38 @@ def set_dataset_uid(
 
     payload = datasets[dataset_name]
     dataset_uid = payload[DATASET_UID_COLUMN]
-    feature_spaces = feature_spaces_for(payload["files"])
-    if not feature_spaces:
-        raise ValueError(f"Dataset {dataset_name!r} has no obs feature spaces.")
 
     lance_path = os.path.join(collection_root, dataset_name, LANCE_DB_DIR)
     db = lancedb.connect(lance_path)
     existing = set(db.list_tables().tables)
+    table_name = obs_class
 
-    table_names = [obs_table_name(obs_class, fs, len(feature_spaces)) for fs in feature_spaces]
-    print(f"{dataset_name}: dataset_uid={dataset_uid} -> {table_names}")
+    print(f"{dataset_name}: dataset_uid={dataset_uid} -> {table_name}")
+    if table_name not in existing:
+        print(f"  skip {table_name}: not in lance_db")
+        return 0
 
-    applied = 0
     applicator = CurationApplicator(lance_path, audit_db_path=default_audit_db_path(lance_path))
     try:
-        for table_name in table_names:
-            if table_name not in existing:
-                print(f"  skip {table_name}: not staged")
-                continue
-
-            # AddColumn for the normal (freshly staged) case; SetColumn keeps
-            # re-runs idempotent once the column is present.
-            has_column = DATASET_UID_COLUMN in db.open_table(table_name).schema.names
-            op_cls = SetColumn if has_column else AddColumn
-            value_kw = "new_value" if has_column else "value"
-            op = op_cls(
-                column=DATASET_UID_COLUMN,
-                tool="set_dataset_uid",
-                reason=f"link {dataset_name} obs rows to their dataset record",
-                source=manifest_path,
-                **{value_kw: dataset_uid},
-            )
-            txn = CurationTransaction(table_name=table_name, changes=[op])
-            result = applicator.apply(txn, dry_run=dry_run, allowed_columns={DATASET_UID_COLUMN})
-            print(f"  {table_name}: {op.kind.value} status={result.status.value}")
-            if result.error:
-                raise RuntimeError(f"{table_name}: {result.error}")
-            applied += 1
+        has_column = DATASET_UID_COLUMN in db.open_table(table_name).schema.names
+        op_cls = SetColumn if has_column else AddColumn
+        value_kw = "new_value" if has_column else "value"
+        op = op_cls(
+            column=DATASET_UID_COLUMN,
+            tool="set_dataset_uid",
+            reason=f"link {dataset_name} obs rows to their dataset record",
+            source=manifest_path,
+            **{value_kw: dataset_uid},
+        )
+        txn = CurationTransaction(table_name=table_name, changes=[op])
+        result = applicator.apply(txn, dry_run=dry_run, allowed_columns={DATASET_UID_COLUMN})
+        print(f"  {table_name}: {op.kind.value} status={result.status.value}")
+        if result.error:
+            raise RuntimeError(f"{table_name}: {result.error}")
     finally:
         applicator.close()
+
+    applied = 1
 
     if dry_run:
         print("(dry run — Lance not mutated)")

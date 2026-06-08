@@ -30,6 +30,7 @@ import pandas as pd
 import pyarrow as pa
 from assign_uids import assign_uids_for_table
 from drop_leftover_columns import drop_leftovers_for_table
+from join_feature_space_obs import join_collection
 from populate_registry_keys import populate_fks_for_table
 from set_dataset_uid import set_dataset_uid
 from validate_tables import validate_table
@@ -108,8 +109,25 @@ def drop_target_join_columns(
             overwrite_table(ref, drop_arrow_columns(table, [join_col]))
 
 
-def finalize_collection(collection_root: str, schema_path: str, *, dry_run: bool = False) -> None:
+def _obs_classes(info: SchemaInfo) -> list[str]:
+    return sorted(name for name, kind in info.kinds.items() if kind == "obs")
+
+
+def finalize_collection(
+    collection_root: str,
+    schema_path: str,
+    *,
+    obs_class: str | None = None,
+    dry_run: bool = False,
+) -> None:
     info = load_schema_info(schema_path)
+    obs_classes = [obs_class] if obs_class else _obs_classes(info)
+    if obs_classes:
+        print("== join feature-space obs ==")
+        for cls in obs_classes:
+            join_collection(collection_root, obs_class=cls, dry_run=dry_run)
+        print()
+
     refs = discover_tables(collection_root, info)
     order = finalization_order(info)
 
@@ -180,10 +198,18 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("collection_root")
     parser.add_argument("--schema", required=True)
+    parser.add_argument(
+        "--obs-class",
+        dest="obs_class",
+        help="Obs schema class to join (default: every obs class in the schema)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     finalize_collection(
-        os.fspath(args.collection_root), os.fspath(args.schema), dry_run=args.dry_run
+        os.fspath(args.collection_root),
+        os.fspath(args.schema),
+        obs_class=args.obs_class,
+        dry_run=args.dry_run,
     )
 
 

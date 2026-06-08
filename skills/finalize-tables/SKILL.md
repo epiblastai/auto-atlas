@@ -5,7 +5,7 @@ description: Finalize harmonized Lance tables in a data package — assign autom
 
 # Finalize tables
 
-This skill runs *after* `schema-harmonization` has finished on **every** table in a collection. Harmonization aligns columns and resolves values (each change applied through the audited `CurationApplicator`). Finalization fills the deterministic, automatic columns, **connects the tables** by resolving registry keys, and checks that each table conforms exactly to its schema.
+This skill runs *after* `schema-harmonization` has finished on **every** table in a collection (and *after* `multimodal-alignment` on multimodal datasets). Harmonization aligns columns and resolves values (each change applied through the audited `CurationApplicator`). For multimodal datasets, finalization first **joins** per-feature-space obs tables into one table named after the obs schema class, then fills the deterministic, automatic columns, **connects the tables** by resolving registry keys, and checks that each table conforms exactly to its schema.
 
 Finalization is the step that turns a set of independently-harmonized tables into a linked collection, so it operates on the **whole collection at once**, not a single table in isolation.
 
@@ -39,21 +39,33 @@ Registry keys impose a dependency order: a target table must have its `uid` assi
 A single entrypoint drives the whole pass:
 
 ```bash
-python skills/finalize-tables/scripts/finalize_collection.py <collection_root> --schema <schema.py> --dry-run
+python scripts/finalize_collection.py <collection_root> --schema <schema.py> --dry-run
 ```
 
-It resolves the DAG, runs the per-table steps in order, and reports what each step changed. The individual scripts below can also be run table-by-table for debugging.
+It joins multimodal obs tables (when present), resolves the DAG, runs the per-table steps in order, and reports what each step changed. The individual scripts below can also be run table-by-table for debugging.
+
+### Joining feature-space obs tables
+
+Multimodal datasets stage one obs table per feature space (`CellIndex_gene_expression`, …). After `multimodal-alignment` has written `multimodal_barcode` and harmonization has run on those tables, join them into a single obs table named after the schema class (`CellIndex`). The join is an outer merge on `multimodal_barcode`; overlapping columns are coalesced (conflicting non-null values fail loud). Per-feature-space source tables are dropped once the joined table is written. Single-modality datasets are skipped.
+
+`finalize_collection.py` runs this automatically for every obs class in the schema (or one named with `--obs-class`). Run it standalone to inspect or dry-run first:
+
+```bash
+python scripts/join_feature_space_obs.py <collection_root> --obs-class CellIndex --dry-run
+```
+
+Table discovery during finalization matches **exact** schema class names only — not `_{feature_space}` suffixes. Harmonization still runs on the suffixed tables before this step.
 
 ## Stamping `dataset_uid`
 
 `dataset_uid` is the one automatic field set upstream within a Collection. Unlike `uid` (per-row) it is one constant for the whole dataset — the `Dataset.uid` assigned at creation and persisted in `collection.json` — so it is an auditable broadcast `AddColumn`. Stamping it links every obs row to its dataset record.
 
 ```bash
-python skills/finalize-tables/scripts/set_dataset_uid.py \
+python scripts/set_dataset_uid.py \
   <collection_root> --dataset HepG2 --obs-class CellIndex --dry-run
 ```
 
-Pass the obs **schema class name** (not necessarily a concrete table name): the dataset's feature spaces in `collection.json` determine the obs table name(s) — bare `CellIndex` for a single feature space, `CellIndex_<feature_space>` for several. Only obs tables carry `dataset_uid`.
+Pass the obs **schema class name** — the concrete Lance table name (`CellIndex`). For multimodal datasets, run `join_feature_space_obs.py` first so feature-space tables are merged into that bare name. Only obs tables carry `dataset_uid`.
 
 ## Populating RegistryKeyField
 
@@ -90,11 +102,12 @@ For each registry key on the table the script:
 
 | Script | Input | Function |
 |---|---|---|
-| `finalize_collection.py` | collection root, schema | DAG-ordered entrypoint; runs every step on every table in dependency order, then the target-join cleanup, the audited leftover-column drop, and the validation sweep. |
+| `finalize_collection.py` | collection root, schema | DAG-ordered entrypoint; joins multimodal obs tables, runs every step on every table in dependency order, then the target-join cleanup, the audited leftover-column drop, and the validation sweep. |
+| `join_feature_space_obs.py` | `lance_db` or collection root, `--obs-class` | Outer-join per-feature-space obs tables on `multimodal_barcode` into the bare obs class name; drop suffixed source tables. |
 | `assign_uids.py` | collection root, schema, optional `--table` | Assign each table's automatic key — `uid` (stable vs random per the schema declaration), or `zarr_group` for `DatasetSchema` tables; idempotent — preserves existing keys. |
 | `set_dataset_uid.py` | collection root, `--dataset`, `--obs-class` | Stamp the dataset's `uid` onto its obs table(s) as an audited broadcast. |
 | `populate_registry_keys.py` | collection root, schema, optional `--table`, optional `--publication-schema` | Seed publication referencing join columns (`0`), resolve `*_join` columns against target `uid`s, verify coverage (fail-loud on any unmatched key), fill scalar and position-aligned polymorphic registry-key columns, drop the referencing-side join columns. |
 | `drop_leftover_columns.py` | collection root, schema, optional `--table` | Drop every column that is not a field of its schema class through an audited `DropColumn` (source data; recorded, not silent). Run after registry keys and the `*_join` cleanup. |
 | `validate_tables.py` | collection root, schema, optional `--table`, `--limit` | Structural + per-row validation of every table against its schema class; exits non-zero and reports any column or value that does not conform. |
 
-Shared logic (schema loading via `homeobox.parser`, table discovery, dependency ordering, Arrow read/mutate/overwrite) lives in the main library: the `SchemaInfo` / `TableRef` dataclasses in `auto_atlas.types` and the functions in `auto_atlas.util`. Registry keys are described by homeobox's own `RegistryKeyField` / `PolymorphicRegistryKeyField` markers, not local copies. The deterministic columns (uid / zarr_group / derived / registry-key fills) and finalization's own `*_join` scaffolding are written directly to Lance; the two writes that touch source-derived data — `set_dataset_uid` and `drop_leftover_columns` — go through the `CurationApplicator`.
+Shared logic (schema loading via `homeobox.parser`, table discovery, dependency ordering, Arrow read/mutate/overwrite) lives in the main library: the `SchemaInfo` / `TableRef` dataclasses in `auto_atlas.types` and the functions in `auto_atlas.util`. Table discovery matches Lance table names to schema classes **by exact name** — feature-space suffixes are a staging/harmonization convention only, resolved by `join_feature_space_obs.py` before finalization discovers tables. Registry keys are described by homeobox's own `RegistryKeyField` / `PolymorphicRegistryKeyField` markers, not local copies. The deterministic columns (uid / zarr_group / derived / registry-key fills) and finalization's own `*_join` scaffolding are written directly to Lance; the two writes that touch source-derived data — `set_dataset_uid` and `drop_leftover_columns` — go through the `CurationApplicator`.
