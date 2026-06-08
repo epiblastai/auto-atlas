@@ -6,9 +6,9 @@ keys to the (already assigned) target ``uid`` and fills the registry-key field.
 
 Conventions (written upstream, see schema-harmonization references/registry_key_join_keys.md):
 
-- Referencing scalar FK ``field``:        ``{field}_{TargetSchema}_join``  (scalar)
-- Target side:                            ``{TargetSchema}_join``           (scalar)
-- Referencing polymorphic FK ``field``:   one ``{field}_{VariantSchema}_join``
+- Referencing scalar registry key ``field``:      ``{field}_{TargetSchema}_join``  (scalar)
+- Target side:                                    ``{TargetSchema}_join``           (scalar)
+- Referencing polymorphic registry key ``field``: one ``{field}_{VariantSchema}_join``
   per variant, each a list **position-aligned** to the discriminator
   (``type_field``) list — the natural key sits at positions whose type selects
   that variant, null elsewhere.
@@ -82,7 +82,7 @@ def build_target_key_map(
         if join_col not in table.column_names:
             raise ValueError(
                 f"Target {tref.table_name!r} is missing join column {join_col!r}; harmonization "
-                f"must record the natural key on the target side before this FK can resolve."
+                f"must record the natural key on the target side before this registry key can resolve."
             )
         keys = table.column(join_col).to_pylist()
         uids = table.column("uid").to_pylist()
@@ -108,7 +108,7 @@ def build_target_key_map(
 def fill_scalar_fk(
     table: pa.Table, fk: RegistryKeyField, key_map: dict[str, str]
 ) -> tuple[pa.Table, str]:
-    """Fill a scalar FK column from its (present) join column. Returns (table, join_col)."""
+    """Fill a scalar registry-key column from its (present) join column. Returns (table, join_col)."""
     join_col = f"{fk.field_name}_{fk.target_schema}_join"
     resolved: list[str | None] = []
     unmatched: list[str] = []
@@ -136,10 +136,10 @@ def fill_scalar_fk(
 def fill_polymorphic_fk(
     table: pa.Table, pfk: PolymorphicRegistryKeyField, key_maps: dict[str, dict[str, str]]
 ) -> tuple[pa.Table, list[str]] | None:
-    """Fill a polymorphic list FK position-by-position. Returns (table, join_cols) or None."""
+    """Fill a polymorphic list registry key position-by-position. Returns (table, join_cols) or None."""
     if pfk.type_field not in table.column_names:
         raise ValueError(
-            f"Polymorphic FK {pfk.field_name!r} requires the discriminator column "
+            f"Polymorphic registry key {pfk.field_name!r} requires the discriminator column "
             f"{pfk.type_field!r}, which is absent."
         )
 

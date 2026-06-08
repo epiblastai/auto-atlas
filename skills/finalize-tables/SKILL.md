@@ -22,7 +22,7 @@ For every table: all automatic columns assigned, all registry keys populated, tr
 
 ## Responsibilities (per table, in order)
 
-1. **Assign `uid`.** For `StableUIDBaseSchema` tables (var / feature / registries) use `cls.compute_stable_uids(df)`. For other tables that declare a `uid` field (incl. `HoxBaseSchema` obs tables) assign random `make_uid()`. Skip tables with no `uid` field.
+1. **Assign the automatic row key.** For `StableUIDBaseSchema` tables (var / feature / registries) compute `uid` via `cls.compute_stable_uids(df)`. For other tables that declare a `uid` field (incl. `HoxBaseSchema` obs tables) assign random `make_uid()`. `DatasetSchema` tables key on `zarr_group` instead of `uid` — assign it a random `make_uid()` (one modality write per feature-space row), creating the column since the staging scaffold omits it. Skip tables with neither key.
 2. **Stamp `dataset_uid`** on obs tables (one constant per dataset; details below).
 3. **Populate registry keys** — only after every *target_schema* table already has its `uid` assigned (below).
 4. **Run `compute_auto_fields`** for `HoxBaseSchema` (obs) tables — fills derived columns. Must run *after* registry keys, because some derived columns may depend on them.
@@ -63,7 +63,7 @@ A registry key links a row to a row in a *target_schema* table by that target's 
 
 The natural key that links a registry key to its target is almost always some original column — but not necessarily a column that survives in the standardized schema, and the best key on either side is often a leftover that would otherwise be dropped. So harmonization, which has the most context about the raw data, is responsible for **recording the join key as a standardized column** rather than finalization rediscovering it:
 
-- On the **referencing** table, harmonization writes a column named `{field_name}_{target_schema}_join` holding the natural-key value(s) that identify the target row(s), in the registry key's cardinality (a scalar for a scalar FK, a list for a list FK). It renames an existing column or adds one as needed, including any reshaping (splitting a delimited pair, exploding a combinatorial cell) so the join column already has the right shape.
+- On the **referencing** table, harmonization writes a column named `{field_name}_{target_schema}_join` holding the natural-key value(s) that identify the target row(s), in the registry key's cardinality (a scalar for a scalar registry key, a list for a list registry key). It renames an existing column or adds one as needed, including any reshaping (splitting a delimited pair, exploding a combinatorial cell) so the join column already has the right shape.
 - On the **target_schema** table, harmonization exposes the matching key under the same convention so the two can be equi-joined.
 
 Finalization discovers these `*_join` columns by naming convention; it does not guess. If a registry key has no recorded join column and cannot be left null, surface it to the user rather than inventing a link.
@@ -88,10 +88,10 @@ For each registry key on the table the script:
 | Script | Input | Function |
 |---|---|---|
 | `finalize_collection.py` | collection root, schema | DAG-ordered entrypoint; runs every step on every table in dependency order, then the target-join cleanup, the audited leftover-column drop, and the validation sweep. |
-| `assign_uids.py` | collection root, schema, optional `--table` | Assign `uid` per table (stable vs random per the schema declaration); idempotent — preserves existing uids. |
+| `assign_uids.py` | collection root, schema, optional `--table` | Assign each table's automatic key — `uid` (stable vs random per the schema declaration), or `zarr_group` for `DatasetSchema` tables; idempotent — preserves existing keys. |
 | `set_dataset_uid.py` | collection root, `--dataset`, `--obs-class` | Stamp the dataset's `uid` onto its obs table(s) as an audited broadcast. |
-| `populate_registry_keys.py` | collection root, schema, optional `--table` | Resolve `*_join` columns against target `uid`s, verify coverage (fail-loud on any unmatched key), fill scalar and position-aligned polymorphic FK columns, drop the referencing-side join columns. |
+| `populate_registry_keys.py` | collection root, schema, optional `--table` | Resolve `*_join` columns against target `uid`s, verify coverage (fail-loud on any unmatched key), fill scalar and position-aligned polymorphic registry-key columns, drop the referencing-side join columns. |
 | `drop_leftover_columns.py` | collection root, schema, optional `--table` | Drop every column that is not a field of its schema class through an audited `DropColumn` (source data; recorded, not silent). Run after registry keys and the `*_join` cleanup. |
 | `validate_tables.py` | collection root, schema, optional `--table`, `--limit` | Structural + per-row validation of every table against its schema class; exits non-zero and reports any column or value that does not conform. |
 
-Shared logic (schema loading via `homeobox.parser`, table discovery, dependency ordering, Arrow read/mutate/overwrite) lives in the main library: the `SchemaInfo` / `TableRef` dataclasses in `auto_atlas.types` and the functions in `auto_atlas.util`. Registry keys are described by homeobox's own `RegistryKeyField` / `PolymorphicRegistryKeyField` markers, not local copies. The deterministic columns (uid / derived / FK fills) and finalization's own `*_join` scaffolding are written directly to Lance; the two writes that touch source-derived data — `set_dataset_uid` and `drop_leftover_columns` — go through the `CurationApplicator`.
+Shared logic (schema loading via `homeobox.parser`, table discovery, dependency ordering, Arrow read/mutate/overwrite) lives in the main library: the `SchemaInfo` / `TableRef` dataclasses in `auto_atlas.types` and the functions in `auto_atlas.util`. Registry keys are described by homeobox's own `RegistryKeyField` / `PolymorphicRegistryKeyField` markers, not local copies. The deterministic columns (uid / zarr_group / derived / registry-key fills) and finalization's own `*_join` scaffolding are written directly to Lance; the two writes that touch source-derived data — `set_dataset_uid` and `drop_leftover_columns` — go through the `CurationApplicator`.
