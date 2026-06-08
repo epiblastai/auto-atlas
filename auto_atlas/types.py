@@ -240,7 +240,7 @@ class ResolutionReport:
 # Finalization types
 # ---------------------------------------------------------------------------
 #
-# Foreign keys are described by homeobox's own ``RegistryKeyField`` /
+# Registry keys are described by homeobox's own ``RegistryKeyField`` /
 # ``PolymorphicRegistryKeyField`` markers — there is no need for parallel local
 # dataclasses. ``auto_atlas.util.load_schema_info`` reconstructs those markers
 # from the parsed schema and hangs them off the ``SchemaInfo`` below.
@@ -250,8 +250,8 @@ class ResolutionReport:
 class SchemaInfo:
     """Everything the finalization steps need to know about the target schema.
 
-    ``scalar_fks`` / ``poly_fks`` map a source class name to the foreign-key
-    markers declared on it. ``dataset_uid`` (a foreign key whose ``target_field``
+    ``scalar_fks`` / ``poly_fks`` map a source class name to the registry-key
+    markers declared on it. ``dataset_uid`` (a registry key whose ``target_field``
     is not ``uid``) is omitted: it is stamped from ``collection.json``, not
     resolved by a join.
     """

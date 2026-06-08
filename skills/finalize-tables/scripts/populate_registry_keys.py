@@ -1,8 +1,8 @@
-"""Resolve foreign keys by joining harmonization's natural-key columns to target uids.
+"""Resolve registry keys by joining harmonization's natural-key columns to target uids.
 
 Harmonization records, on each referencing table, a standardized join column per
-foreign key (and the matching key on the target). Finalization equi-joins those
-keys to the (already assigned) target ``uid`` and fills the foreign-key field.
+registry key (and the matching key on the target). Finalization equi-joins those
+keys to the (already assigned) target ``uid`` and fills the registry-key field.
 
 Conventions (written upstream, see schema-harmonization references/registry_key_join_keys.md):
 
@@ -50,7 +50,7 @@ _SAMPLE = 15
 def _fail_unmatched(field_name: str, target: str, unmatched: list, total: int) -> None:
     sample = unmatched[:_SAMPLE]
     raise RuntimeError(
-        f"Foreign key {field_name!r} -> {target}: {len(unmatched)}/{total} source key(s) "
+        f"Registry key {field_name!r} -> {target}: {len(unmatched)}/{total} source key(s) "
         f"did not match a target row. Investigate (a normalization difference, a wrong key, "
         f"or genuinely missing target rows) rather than nulling them.\n"
         f"  unmatched sample: {sample}"
@@ -77,7 +77,7 @@ def build_target_key_map(
         if "uid" not in table.column_names:
             raise ValueError(
                 f"Target {tref.table_name!r} has no 'uid'; assign uids before populating "
-                f"foreign keys that reference {target_class}."
+                f"registry keys that reference {target_class}."
             )
         if join_col not in table.column_names:
             raise ValueError(
@@ -212,7 +212,7 @@ def fill_polymorphic_fk(
 def populate_fks_for_table(
     ref: TableRef, info: SchemaInfo, refs: list[TableRef], *, dry_run: bool = False
 ) -> None:
-    """Resolve and fill every foreign key declared on this table's schema class."""
+    """Resolve and fill every registry key declared on this table's schema class."""
     scalar = info.scalar_fks.get(ref.class_name, [])
     poly = info.poly_fks.get(ref.class_name, [])
     if not scalar and not poly:

@@ -13,7 +13,7 @@ This skill handles the full pre-ingestion pipeline:
 2. **Downloading** selected files via FTP
 3. **Classifying** files (e.g., h5ad vs matrix + companion files)
 4. **Writing metadata.json** that stores GEO series or sample metadata
-5. **Creating global tables** for feature registries and foreign keys
+5. **Creating global tables** for feature registries and registry keys
 6. **Delegating** metadata standardization to resolver sub-agents
 
 It does NOT handle assembling standardized CSVs, adding data to LanceDB, or writing Zarr arrays. Those responsibilities belong to the `geo-data-curator` skill. 
@@ -72,9 +72,9 @@ If no schema was provided, ask the user for the path before going any further. R
 
 1. **The obs schema classes** — These inherits from `HoxBaseSchema`. If there is more than one, you user will need to specify which to use, do not assume.
 2. **Feature registry classes** — These inherit from `FeatureBaseSchema` and correspond to var-level fields per feature space supported by an atlas.
-3. **Foreign key classes** — These inherit directly from `LanceModel`. These tables are referenced by either the obs table or a feature registry table through a foreign key.
+3. **Registry key classes** — These inherit directly from `LanceModel`. These tables are referenced by either the obs table or a feature registry table through a registry key.
 
-Our goal is to fill out each of the schemas and fields that apply to the provided GEO dataset, which will always include the obs class but may involve only a subset of the feature registry and foreign key classes in the schema file. If a field's purpose is unclear from its name, type, docstring or in-line comments, ask the user.
+Our goal is to fill out each of the schemas and fields that apply to the provided GEO dataset, which will always include the obs class but may involve only a subset of the feature registry and registry key classes in the schema file. If a field's purpose is unclear from its name, type, docstring or in-line comments, ask the user.
 
 ### 3. Download and read GEO metadata
 
@@ -174,9 +174,9 @@ db.create_table("GenomicFeatureSchema", data=var_df, mode="overwrite")
 
 ### 7. Create collection-level informational tables
 
-Foreign key tables (genetic perturbations, small molecules, donors, etc.) describe entities shared across the whole collection — they derive from the collection-level `LIBRARY` files and from columns in the per-dataset obs tables. Stage them globally in a single Lance database at the collection root, `<root_dir>/lance_db/`, one table per foreign key schema, named by the CamelCase schema class (e.g. `GeneticPerturbationSchema`, `SmallMoleculeSchema`).
+Registry key tables (genetic perturbations, small molecules, donors, etc.) describe entities shared across the whole collection — they derive from the collection-level `LIBRARY` files and from columns in the per-dataset obs tables. Stage them globally in a single Lance database at the collection root, `<root_dir>/lance_db/`, one table per registry key schema, named by the CamelCase schema class (e.g. `GeneticPerturbationSchema`, `SmallMoleculeSchema`).
 
-For each foreign key schema:
+For each registry key schema:
 
 1. Gather the relevant columns from the shared `LIBRARY` file(s) and/or from obs across all datasets
 2. Add a key column (e.g. `reagent_id`) for mapping back to obs
@@ -197,7 +197,7 @@ Feature (var) registries are NOT created here — they are staged per dataset in
 
 ### 8. Delegate resolution to resolver subagents
 
-Feature registries (var) and foreign key tables are resolved across ALL experiments in one pass. Same entity in multiple experiments gets one UID.
+Feature registries (var) and registry key tables are resolved across ALL experiments in one pass. Same entity in multiple experiments gets one UID.
 
 Launch relevant resolvers for each global `_raw.csv`:
 
@@ -251,7 +251,7 @@ All resolvers, except for `publication-resolver` which must be run first, may ru
 
 After all resolvers complete, verify that the expected output files exist:
 
-- Finalized global tables: `{SchemaClassName}.parquet` for each feature registry, foreign key schema, and publication schema
+- Finalized global tables: `{SchemaClassName}.parquet` for each feature registry, registry key schema, and publication schema
 - Per-experiment: raw obs/var CSVs, resolver fragment obs CSVs (e.g., ontology fragments), preparer fragment obs CSVs
 - Accession-level: `metadata.json`, `publication.json` (with `publication_uid`), `PublicationSchema.parquet`
 

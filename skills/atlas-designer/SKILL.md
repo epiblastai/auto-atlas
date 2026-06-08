@@ -24,7 +24,7 @@ Official docs pages for homeobox:
    - Which feature spaces are to be supported: gene expression, chromatin accessibility, protein abundance, image features, image tiles, etc.?
    - Which feature spaces have a feature axis and therefore need registry schemas?
    - Which global entities need their own tables: publications, donors, perturbations, compounds, protocols, biosamples, cohorts? Think carefully about the benefits of maintaining separate tables versus a single denormalized table.
-   - Which identifiers should be durable foreign keys?
+   - Which identifiers should be durable registry keys?
 2. Write schema classes in this order:
    - imports and enums/constants
    - stable global entity tables (`StableUIDBaseSchema` or `LanceModel`)
@@ -33,7 +33,7 @@ Official docs pages for homeobox:
    - optional schema maps such as `REGISTRY_SCHEMAS` and `FK_TABLE_SCHEMAS`
    - obs schema(s) subclassing `HoxBaseSchema`
    - optional materialized index/summary tables
-3. Include inline comments for every non-obvious biological meaning. Use `RegistryKeyField` for simple scalar foreign keys.
+3. Include inline comments for every non-obvious biological meaning. Use `RegistryKeyField` for simple scalar registry keys.
 4. Add pydantic validators only for real invariants: enum membership, equal-length parallel lists, generated search strings, derived stable-UID fields, or deterministic materialized IDs.
 5. Validate the schema module by importing it and creating a temporary atlas with `create_or_open_atlas`.
 
@@ -133,7 +133,7 @@ target_chromosome: str | None = RegistryKeyField.declare(
 For polymorphic or list references, keep explicit names and comments until Homeobox supports richer FK metadata:
 
 ```python
-perturbation_uids: list[str] | None   # Foreign key values.
+perturbation_uids: list[str] | None   # Registry key values.
 perturbation_types: list[str] | None  # Determines which perturbation table each uid belongs to.
 ```
 
@@ -252,7 +252,7 @@ class CellIndex(HoxBaseSchema):
 - Every schema has at most one `StableUIDField`.
 - Simple scalar relationships use `RegistryKeyField.declare(...)`; polymorphic/list references have clear companion type fields and comments.
 - Composite stable identities are explicit derived fields.
-- Foreign key-like fields are named `*_uid` or `*_uids`.
+- Registry key-like fields are named `*_uid` or `*_uids`.
 - Dataset provenance fields live on a `DatasetSchema` subclass.
 - Validators encode real invariants and generated fields only.
 - The schema avoids dataset-specific one-offs unless the atlas itself requires them.

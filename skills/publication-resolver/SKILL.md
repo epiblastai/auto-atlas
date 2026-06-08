@@ -13,7 +13,7 @@ Fetch publication metadata from PubMed and full text from PMC Open Access. Produ
 
 **Output:**
 
-*Accession-level (global foreign key tables):*
+*Accession-level (global registry key tables):*
 - `PublicationSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, one row per publication. Parquet preserves types so the file can be loaded directly into LanceDB.
 - `PublicationSectionSchema.parquet` — one row per text section (abstract paragraphs or PMC full-text sections), with `publication_uid` FK. Only produced when `--section-schema` is provided and the target schema includes a section table.
 - `publication.json` — backward-compatible sidecar for human inspection and downstream use. Includes the generated `publication_uid` so the curator can reference it when building `DatasetSchema` records.
@@ -138,7 +138,7 @@ PMC full text is attempted first. If the article is not in PMC Open Access, the 
 
 ### 4. Assign UID and build schema records
 
-Generate a publication UID via `make_uid()` — this UID is used as the primary key in `PublicationSchema` and as the foreign key in `PublicationSectionSchema`.
+Generate a publication UID via `make_uid()` — this UID is used as the primary key in `PublicationSchema` and as the registry key in `PublicationSectionSchema`.
 
 ```python
 from homeobox.schema import make_uid

@@ -46,7 +46,7 @@ def extract_h5ad_obs_var(h5ad_path: str) -> tuple[str, str]:
 # Finalization turns a set of independently-harmonized Lance tables into a
 # linked, schema-conformant collection. The helpers below load a target homeobox
 # schema as live pydantic classes *and* its parsed relationship graph, discover
-# the concrete Lance tables across a collection, order them so every foreign-key
+# the concrete Lance tables across a collection, order them so every registry-key
 # target precedes its referrers, and read / mutate / overwrite a table at the
 # Arrow level so harmonized column types (lists, pointer structs) survive
 # untouched.
@@ -76,9 +76,9 @@ def load_schema_module(schema_path: str) -> Any:
 
 
 def load_schema_info(schema_path: str) -> SchemaInfo:
-    """Load the schema module and derive the kinds map and foreign-key markers.
+    """Load the schema module and derive the kinds map and registry-key markers.
 
-    Foreign keys are returned as homeobox's own ``RegistryKeyField`` /
+    Registry keys are returned as homeobox's own ``RegistryKeyField`` /
     ``PolymorphicRegistryKeyField`` markers. The parser flattens a polymorphic FK
     into one relationship per variant; those are recombined here into a single
     marker per field.
@@ -204,7 +204,7 @@ def tables_for_class(refs: list[TableRef], class_name: str) -> list[TableRef]:
 def finalization_order(info: SchemaInfo) -> list[str]:
     """Topologically sort schema classes so every FK target precedes its referrers.
 
-    Edges come from the schema's own foreign-key declarations (target -> source),
+    Edges come from the schema's own registry-key declarations (target -> source),
     so the order is derived, never hard-coded. Cycles raise rather than silently
     producing a wrong order.
     """

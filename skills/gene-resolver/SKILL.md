@@ -153,7 +153,7 @@ This requires the caller (preparer) to provide the accession directory path and 
 After finalization, write `resolver_reports/gene-resolver.md` in the working directory with the run summary and blank-field audit.
 
 Common cases:
-- Use `--column feature_id=ensembl_gene_id` when the schema wants a stable gene foreign key.
+- Use `--column feature_id=ensembl_gene_id` when the schema wants a stable gene registry key.
 - Use literal constants such as `--column feature_type=gene` for schema-wide values.
 - Only populate fields like `ensembl_version` when the input explicitly contains that exact value. Do not infer it from dataset-specific labels like `gene_version9`.
 

@@ -46,7 +46,7 @@ class OrganismRecord(LanceModel):
         Human-readable name, e.g. ``"human"``, ``"mouse"``.
     scientific_name:
         Binomial name in lowercase, e.g. ``"homo_sapiens"``. Used as
-        the foreign key by other tables because scientific names are
+        the registry key by other tables because scientific names are
         guaranteed globally unique by taxonomic convention.
     ncbi_taxonomy_id:
         NCBI Taxonomy ID, e.g. ``9606`` for human.

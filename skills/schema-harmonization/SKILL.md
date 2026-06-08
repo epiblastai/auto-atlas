@@ -9,7 +9,7 @@ Harmonize the raw Lance tables in a data package so they conform to a target hom
 
 ## Input
 
-- A **LanceDB** location and table name. Collection-level foreign keys live in `<collection_root>/lance_db/`; per-dataset obs/var live in `<dataset_dir>/lance_db/`. Table names match schema class names (e.g. `GeneticFeatureSchema`, `CellIndex`), modulo feature-space suffixes.
+- A **LanceDB** location and table name. Collection-level registry keys live in `<collection_root>/lance_db/`; per-dataset obs/var live in `<dataset_dir>/lance_db/`. Table names match schema class names (e.g. `GeneticFeatureSchema`, `CellIndex`), modulo feature-space suffixes.
 - A **target homeobox schema file**. The table name must correspond to one of its schema classes.
 
 ## The audit model (read before mutating anything)
@@ -83,7 +83,7 @@ This is stricter than the value-resolution rule below: it covers every field inc
 
 **Out of scope: automatically generated columns.** Do not populate `uid`, `dataset_uid`, or other auto-generated/derived columns. These are deterministic functions of the data and schema — no decision or source to record — so they do not need to be covered in the audit trail. A downstream finalization step will assign them and validate the table exactly matches the schema. Harmonization stops at aligning columns and resolving values.
 
-**Foreign keys: record the join key, do not fill the uid.** Do not populate the uid values in `RegistryKeyField` or `PolymorphicRegistryKeyField` columns — those cannot be determined until the whole collection is harmonized and are assigned by the downstream finalization step. What harmonization *does* own is recording the natural join key that links each foreign key to its target, as a standardized `*_join` column, so finalization can resolve it. See **references/registry_key_join_keys.md** for how to identify, validate, and name these keys.
+**Registry keys: record the join key, do not fill the uid.** Do not populate the uid values in `RegistryKeyField` or `PolymorphicRegistryKeyField` columns — those cannot be determined until the whole collection is harmonized and are assigned by the downstream finalization step. What harmonization *does* own is recording the natural join key that links each registry key to its target, as a standardized `*_join` column, so finalization can resolve it. See **references/registry_key_join_keys.md** for how to identify, validate, and name these keys.
 
 ## Resolving values
 

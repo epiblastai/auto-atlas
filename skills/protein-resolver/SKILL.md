@@ -157,7 +157,7 @@ This requires the caller (preparer) to provide the accession directory path and 
 After finalization, write `resolver_reports/protein-resolver.md` in the working directory with the run summary, control detection details, and blank-field audit.
 
 Common cases:
-- Use `--column feature_id=uniprot_id` when the schema wants a stable protein foreign key.
+- Use `--column feature_id=uniprot_id` when the schema wants a stable protein registry key.
 - Use literal constants such as `--column feature_type=protein` for schema-wide values.
 - `sequence` and `sequence_length` are populated from the SwissProt reference DB when a UniProt ID resolves.
 - `FeatureBaseSchema.global_index` is auto-generated at ingestion time, not during resolution.

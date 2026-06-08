@@ -23,7 +23,7 @@ Handles three input types that may co-exist in a single dataset:
 
 **Output:**
 
-*Accession-level (global foreign key table):*
+*Accession-level (global registry key table):*
 - `GeneticPerturbationSchema_resolved.csv` — all raw columns plus resolved columns, UIDs, `resolved` boolean. Full intermediate output for inspection and debugging.
 - `GeneticPerturbationSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, no `resolved` column, no raw columns. Parquet preserves types so the file can be loaded directly into LanceDB.
 - `resolver_reports/genetic-perturbation-resolver.md` — markdown report written in the working directory. Summarize enrichment sources used, outputs written, counts, unresolved items, and a field-by-field blank justification audit.
@@ -276,7 +276,7 @@ All resolved columns follow the same principle: **never NaN unless there is genu
 
 ## Obs-Level Fragment Workflow (B1–B4)
 
-After the global foreign key table is resolved and finalized (A1–A10), write per-experiment obs fragments that map each cell to its perturbation UIDs and control status.
+After the global registry key table is resolved and finalized (A1–A10), write per-experiment obs fragments that map each cell to its perturbation UIDs and control status.
 
 The preparer provides:
 - A list of experiment directories (each containing `{feature_space}_raw_obs.csv`)
@@ -284,7 +284,7 @@ The preparer provides:
 - The feature space name (e.g., `gene_expression`)
 - Dose/duration columns and their units, if applicable
 
-### B1. Load the resolved foreign key table
+### B1. Load the resolved registry key table
 
 Load `GeneticPerturbationSchema.parquet` (the finalized table with UIDs). Build a lookup from reagent identifiers such as `reagent_id`, `guide_sequence`, or `intended_gene_name` to `uid` values.
 

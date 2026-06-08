@@ -2,7 +2,7 @@
 
 Finalization turns independently-harmonized tables into a linked, schema-conformant
 collection. It runs on the **whole collection at once**, in dependency order: a
-foreign-key target must have its ``uid`` assigned before any table referencing it
+registry-key target must have its ``uid`` assigned before any table referencing it
 is filled. The order is derived from the schema's own FK declarations, never
 hard-coded.
 
@@ -10,7 +10,7 @@ Per table, in order:
 
 1. assign ``uid``                       (assign_uids)
 2. stamp ``dataset_uid``  (obs only)    (set_dataset_uid)
-3. populate foreign keys                (populate_registry_keys)
+3. populate registry keys                (populate_registry_keys)
 4. ``compute_auto_fields``  (obs only)  — derived columns, after FKs
 5. validate against the schema class    (validate_tables), as a final sweep
 
@@ -140,7 +140,7 @@ def finalize_collection(collection_root: str, schema_path: str, *, dry_run: bool
                         dry_run=dry_run,
                     )
                     stamped.add(key)
-            # 3. foreign keys
+            # 3. registry keys
             populate_fks_for_table(ref, info, refs, dry_run=dry_run)
             # 4. derived columns (obs only)
             if kind == "obs":
