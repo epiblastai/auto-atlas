@@ -14,8 +14,8 @@ from homeobox.schema import (
     OntologyAlignedField,
     PointerField,
     PolymorphicRegistryKeyField,
+    RegistryBaseSchema,
     RegistryKeyField,
-    StableUIDBaseSchema,
     StableUIDField,
     SummaryField,
     _iter_pointer_annotations,
@@ -119,7 +119,7 @@ def _build_perturbation_search_string(uids: list[str] | None, types: list[str] |
 # ---------------------------------------------------------------------------
 
 
-class PublicationSchema(StableUIDBaseSchema):
+class PublicationSchema(RegistryBaseSchema):
     # The doi for the paper, there is almost always one
     doi: str = CrossReferenceField.declare(database_name="DOI")
     # PubMed id for the paper, there is almost always one
@@ -195,7 +195,7 @@ class AtlasDatasetSchema(DatasetSchema):
     )
 
 
-class DonorSchema(StableUIDBaseSchema):
+class DonorSchema(RegistryBaseSchema):
     age_years: float | None = None
     sex: str | None = None
     ethnicity: str | None = OntologyAlignedField.declare(ontology_name="HANCESTRO")
@@ -335,7 +335,7 @@ class ImageFeatureSchema(FeatureBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-class SmallMoleculeSchema(StableUIDBaseSchema):
+class SmallMoleculeSchema(RegistryBaseSchema):
     """Small molecule data, either perturbations or features in themselves."""
 
     # The smiles string for the molecule
@@ -366,7 +366,7 @@ class SmallMoleculeSchema(StableUIDBaseSchema):
         return self
 
 
-class GeneticPerturbationSchema(StableUIDBaseSchema):
+class GeneticPerturbationSchema(RegistryBaseSchema):
     """A single genetic perturbation reagent and its genomic target.
 
     Perturbations are anchored to genomic coordinates rather than gene
@@ -425,7 +425,7 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
         return self
 
 
-class BiologicPerturbationSchema(StableUIDBaseSchema):
+class BiologicPerturbationSchema(RegistryBaseSchema):
     """A biologic agent (protein, cytokine, antibody, etc.) applied to cells.
 
     Biologic perturbations are identified by the agent's name and, where

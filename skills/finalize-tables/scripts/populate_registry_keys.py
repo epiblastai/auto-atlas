@@ -19,6 +19,16 @@ match exactly one target row. Any unmatched key fails loud — keys are
 investigated, never silently nulled. Transient ``*_join`` columns are dropped
 once the fill is verified.
 
+**One publication per collection.** The publication target table is staged with
+``{PubSchema}_join = 0``. Before resolving registry keys, this script seeds the
+matching referencing-side columns (``{field}_{PubSchema}_join = 0``) on any
+table that declares a scalar ``RegistryKeyField`` to that target but does not
+yet have the join column — e.g. per-dataset ``DatasetSchema`` tables. Existing
+join columns (including on the section table, seeded upstream) are left unchanged.
+Publication targets are detected automatically (target-side join column present
+and all values are the placeholder ``0``), or named explicitly with
+``--publication-schema``.
+
     python populate_registry_keys.py <collection_root> --schema <schema.py> \\
         [--table CellIndex] [--dry-run]
 """
@@ -45,6 +55,7 @@ from auto_atlas.util import (
 )
 
 _SAMPLE = 15
+PUBLICATION_JOIN_PLACEHOLDER = 0
 
 
 def _fail_unmatched(field_name: str, target: str, unmatched: list, total: int) -> None:
@@ -103,6 +114,75 @@ def build_target_key_map(
                 )
             mapping[key] = uid
     return mapping
+
+
+def discover_publication_target_schemas(
+    refs: list[TableRef], explicit: list[str] | None = None
+) -> set[str]:
+    """Publication registry classes staged with placeholder join key ``0``.
+
+    Auto-detects targets whose ``{Class}_join`` column exists and every non-null
+    value is the placeholder. Pass ``explicit`` to override detection.
+    """
+    if explicit:
+        return set(explicit)
+
+    detected: set[str] = set()
+    placeholder = str(PUBLICATION_JOIN_PLACEHOLDER)
+    for ref in refs:
+        join_col = f"{ref.class_name}_join"
+        table = read_arrow(ref)
+        if join_col not in table.column_names:
+            continue
+        keys = [join_key(value) for value in table.column(join_col).to_pylist()]
+        non_null = [key for key in keys if key is not None]
+        if non_null and all(key == placeholder for key in non_null):
+            detected.add(ref.class_name)
+    return detected
+
+
+def seed_publication_referencing_joins(
+    refs: list[TableRef],
+    info: SchemaInfo,
+    publication_schemas: set[str],
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Add ``{field}_{PubSchema}_join = 0`` on referencers that lack the column."""
+    if not publication_schemas:
+        return
+
+    for ref in refs:
+        fks = [
+            fk
+            for fk in info.scalar_fks.get(ref.class_name, [])
+            if fk.target_schema in publication_schemas
+        ]
+        if not fks:
+            continue
+
+        table = read_arrow(ref)
+        changed = False
+        for fk in fks:
+            join_col = f"{fk.field_name}_{fk.target_schema}_join"
+            if join_col in table.column_names:
+                continue
+            print(
+                f"  seed {ref.table_name}.{join_col} = {PUBLICATION_JOIN_PLACEHOLDER!r} "
+                f"(one publication per collection)"
+            )
+            values = [PUBLICATION_JOIN_PLACEHOLDER] * table.num_rows
+            table = set_arrow_column(
+                table,
+                join_col,
+                pa.array(values, type=pa.int64()),
+            )
+            changed = True
+
+        if changed and not dry_run:
+            overwrite_table(ref, table)
+        elif changed:
+            print(f"    (dry run — would write {ref.table_name})")
 
 
 def fill_scalar_fk(
@@ -275,10 +355,17 @@ def populate_registry_keys(
     schema_path: str,
     *,
     table: str | None = None,
+    publication_schemas: list[str] | None = None,
     dry_run: bool = False,
 ) -> None:
     info = load_schema_info(schema_path)
     refs = discover_tables(collection_root, info)
+    pub_targets = discover_publication_target_schemas(refs, publication_schemas)
+    if pub_targets:
+        print(f"Publication registry target(s): {sorted(pub_targets)}")
+        seed_publication_referencing_joins(refs, info, pub_targets, dry_run=dry_run)
+        print()
+
     targets = refs
     if table is not None:
         targets = [r for r in refs if r.table_name == table or r.class_name == table]
@@ -293,12 +380,24 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("collection_root")
     parser.add_argument("--schema", required=True)
     parser.add_argument("--table", default=None, help="Restrict to one table or class name")
+    parser.add_argument(
+        "--publication-schema",
+        action="append",
+        default=None,
+        dest="publication_schemas",
+        metavar="CLASS",
+        help=(
+            "Publication registry schema class (repeatable). "
+            "Auto-detected from placeholder target join columns when omitted."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     populate_registry_keys(
         os.fspath(args.collection_root),
         os.fspath(args.schema),
         table=args.table,
+        publication_schemas=args.publication_schemas,
         dry_run=args.dry_run,
     )
 

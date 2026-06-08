@@ -81,9 +81,11 @@ Before leaving any field null:
 
 This is stricter than the value-resolution rule below: it covers every field including ones with no resolver.
 
-**The dataset table.** Each dataset directory carries a `DatasetSchema` table (one row per feature space) whose descriptive metadata and publication link harmonization fills, while leaving its automatic and `SummaryField` columns alone. See **references/dataset_resolution.md**.
+**The dataset table.** Each dataset directory carries a `DatasetSchema` table (one row per feature space) whose descriptive metadata harmonization fills, while leaving automatic, `SummaryField`, and publication-link columns alone. See **references/dataset_resolution.md**.
 
-**Registry keys: record the join key, do not fill the uid.** Do not populate the uid values in `RegistryKeyField` or `PolymorphicRegistryKeyField` columns — those cannot be determined until the whole collection is harmonized and are assigned by the downstream finalization step. What harmonization *does* own is recording the natural join key that links each registry key to its target, as a standardized `*_join` column, so finalization can resolve it. See **references/registry_key_join_keys.md** for how to identify, validate, and name these keys.
+**Publication tables.** When staged, the collection-level publication registry (and optional section table) in `<collection_root>/lance_db/` need little more than column renaming and occasional casts. See **references/publication_resolution.md**.
+
+**Registry keys: record the join key, do not fill the uid.** Do not populate the uid values in `RegistryKeyField` or `PolymorphicRegistryKeyField` columns — those cannot be determined until the whole collection is harmonized and are assigned by the downstream finalization step. What harmonization *does* own is recording the natural join key that links each registry key to its target, as a standardized `*_join` column, so finalization can resolve it. See **references/registry_key_join_keys.md** for the general join-key rules. **Exception:** publication registry keys — one publication per collection; join scaffolding is seeded at staging, and referencing tables are filled automatically during finalization.
 
 **Out of scope: automatically generated and summary columns.** Do not populate `uid`, `dataset_uid`, `zarr_group`, or other auto-generated/derived columns. These are deterministic functions of the data and schema — no decision or source to record — so they do not need to be covered in the audit trail. A downstream finalization step assigns them and validates the table exactly matches the schema. Likewise do not fill any field the schema marks with `SummaryField`: these are aggregates of a target table computed at ingestion time, after the obs rows are final. Harmonization stops at aligning columns and resolving values.
 
@@ -91,8 +93,13 @@ This is stricter than the value-resolution rule below: it covers every field inc
 
 Resolution maps raw values to canonical identifiers per domain. Per-domain references hold the specific considerations and worked examples:
 
+- **references/dataset_resolution.md** — per-dataset `DatasetSchema` descriptive metadata (one row per feature space).
 - **references/gene_resolution.md** — gene symbols and Ensembl IDs (var-level), with a full worked example.
-- Other domains (ontology terms, proteins, molecules, genetic perturbation targets) follow the same pattern in their own references under `references/`.
+- **references/genetic_perturbation_resolution.md** — genetic perturbation targets, reagents, guide sequences, and row-multiplying reshapes.
+- **references/molecule_resolution.md** — small-molecule names, SMILES, and PubChem CIDs to canonical structures.
+- **references/ontology_resolution.md** — free-text biological metadata to ontology term labels (obs / cell-index fields).
+- **references/protein_resolution.md** — protein aliases, antibody targets, and UniProt accessions.
+- **references/publication_resolution.md** — collection-level publication and section tables (mostly column alignment).
 
 ## Conventions
 

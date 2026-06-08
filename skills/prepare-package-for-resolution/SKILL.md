@@ -11,7 +11,9 @@ This skill loads raw tables into Lance and names them after homeobox schema clas
 
 Tables are named after schema classes (e.g. `GeneticPerturbationSchema`) but their **columns are kept exactly as found in the source file**. This skill does not rename, reshape, or otherwise align columns to the schema's fields, so a staged table will usually not conform to its schema yet. That is expected. Evolving these raw tables into the final schema-aligned form is the job of other downstream skills.
 
-Stage the **`DatasetSchema` scaffold** here (see step 3): the identity rows and their `dataset_uid` come straight from `collection.json`, so they belong with the other raw staging. The scaffold creates only those identity columns — `zarr_group`, descriptive metadata, and the `SummaryField` aggregates are each added later by the step that fills them. Do not stage publication tables here.
+Stage the **`DatasetSchema` scaffold** here (see step 3): the identity rows and their `dataset_uid` come straight from `collection.json`, so they belong with the other raw staging. The scaffold creates only those identity columns — `zarr_group`, descriptive metadata, and the `SummaryField` aggregates are each added later by the step that fills them.
+
+**Publication tables** (step 4) are also staged here, but only when the target schema defines collection-level publication registry tables and the collection includes a `publication.json` sidecar (typically under `other_files/` after coalesce). Skip step 4 if the schema has no publication registry.
 
 ## Expected input
 
@@ -76,8 +78,39 @@ The scaffold creates only the columns known at staging; every other column is ad
 
 - `dataset_uid` ← `collection.json` (the same value `set_dataset_uid` later broadcasts onto obs rows) and `feature_space` ← each space present in the dataset. These are the only columns the scaffold creates.
 - `zarr_group` and other automatic columns ← finalization (like `uid`).
-- accession codes, dataset description, and the publication join key ← **schema-harmonization**.
+- accession codes and dataset description ← **schema-harmonization**.
+- publication registry keys ← **publication harmonization** (future; not schema-harmonization).
 - `SummaryField` aggregates (`n_rows`, `organism`, …) ← ingestion.
+
+### 4. Stage publication tables
+
+Only run this step when the schema defines collection-level publication registry tables **and** the collection has a `publication.json` sidecar. Read the schema to decide which CamelCase table names apply.
+
+The script reads `publication.json` and copies its fields into Lance as-is — only keys present in the JSON are written; staged columns usually will not yet match the schema. Top-level keys other than `text_data` go to a publication registry table. If there's also a table for storing publication sections as documents for search, then `text_data` will be used to fill its rows.
+
+Because each collection has one publication, the script also seeds the join scaffolding `finalize-tables` expects:
+
+- On the publication table: `{PubSchema}_join = 0` (target-side key).
+- On the section table (publication + sections mode): `{field}_{PubSchema}_join = 0` for each `RegistryKeyField` on the section class that points at the publication table (discovered via `--schema`, or pass `--pub-fk-field` explicitly).
+
+There are three modes:
+
+| Mode | Arguments | What gets staged |
+|------|-----------|------------------|
+| Publication only | `--pub-schema` | One row: publication fields + `{PubSchema}_join = 0` |
+| Publication + sections | `--pub-schema` + `--pub-section-schema` | One publication row (with target join) plus section rows (`section_title`, `section_text`, referencing join columns) |
+| Denormalized sections | `--pub-section-schema` only | One row per section with top-level publication fields repeated on each row (no join columns — no separate publication table) |
+
+```
+python scripts/stage_publication_tables.py <collection_root> \
+  --schema <path/to/schema.py> \
+  --pub-schema PublicationSchema \
+  [--pub-section-schema PublicationSectionSchema]
+```
+
+Use `--publication-json` only when the file is not listed in `collection.json` or not at the usual `other_files/publication.json` path.
+
+Note that we do not currently support storing figures and captions in tables, as these are not included in the `publication.json` payload. If a schema includes fields or tables for these, then raise this limitation to the user.
 
 ## Scripts
 
@@ -86,3 +119,4 @@ The scaffold creates only the columns known at staging; every other column is ad
 | `scripts/stage_lance_tables.py` | `python scripts/stage_lance_tables.py <collection_root> --schema <schema.py> [--parse-mode runtime] [--obs-class NAME]` | Stage OBS/VAR into per-dataset `lance_db/` |
 | `scripts/stage_library_table.py` | `python scripts/stage_library_table.py <collection_root> --library <file> --table <SchemaClassName> [--sheet-name SHEET]` | Stage one LIBRARY file into collection `lance_db/` |
 | `scripts/stage_dataset_table.py` | `python scripts/stage_dataset_table.py <collection_root> --schema <schema.py> [--dataset NAME]` | Stage the per-dataset `DatasetSchema` scaffold (one row per feature space) into `<dataset>/lance_db/` |
+| `scripts/stage_publication_tables.py` | `python scripts/stage_publication_tables.py <collection_root> [--pub-schema NAME] [--pub-section-schema NAME] [--schema schema.py] [--pub-fk-field FIELD] [--publication-json PATH]` | Stage `publication.json` into collection `lance_db/` with join scaffolding (requires at least one schema argument) |

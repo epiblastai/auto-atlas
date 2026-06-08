@@ -66,7 +66,9 @@ The natural key that links a registry key to its target is almost always some or
 - On the **referencing** table, harmonization writes a column named `{field_name}_{target_schema}_join` holding the natural-key value(s) that identify the target row(s), in the registry key's cardinality (a scalar for a scalar registry key, a list for a list registry key). It renames an existing column or adds one as needed, including any reshaping (splitting a delimited pair, exploding a combinatorial cell) so the join column already has the right shape.
 - On the **target_schema** table, harmonization exposes the matching key under the same convention so the two can be equi-joined.
 
-Finalization discovers these `*_join` columns by naming convention; it does not guess. If a registry key has no recorded join column and cannot be left null, surface it to the user rather than inventing a link.
+**Exception — one publication per collection.** The publication registry is staged with `{PubSchema}_join = 0` on the single publication row; the section table (when present) gets its referencing join at staging too. Other referencers (e.g. `publication_uid` on a `DatasetSchema` table) do not need harmonization to record a key — `populate_registry_keys.py` seeds `{field}_{PubSchema}_join = 0` on those tables before the usual fill, then the join proceeds like any other registry key.
+
+Finalization discovers `*_join` columns by naming convention; it does not guess natural keys for non-publication registries. If a registry key has no recorded join column and cannot be left null, surface it to the user rather than inventing a link.
 
 ### Resolving and filling
 
@@ -77,6 +79,7 @@ python skills/finalize-tables/scripts/populate_registry_keys.py <collection_root
 
 For each registry key on the table the script:
 
+0. **Publication referencers (collection-wide, once per run).** When a publication registry target is present (auto-detected from `{PubSchema}_join = 0` on the target table, or named with `--publication-schema`), seed any missing `{field}_{PubSchema}_join = 0` columns on tables that declare a scalar `RegistryKeyField` to that target.
 1. Reads the referencing `*_join` column and the matching key on the (already uid-assigned) target table.
 2. Equi-joins natural key → target `uid`, mapping each key to exactly one target row.
 3. **Verifies coverage**: the join key is unique in the target, and every non-null source key matches exactly one target row. It reports matched / unmatched / total and **fails loud on any unmatched key** — never silently nulls (consistent with harmonization's nullable-field rule). Unmatched keys are investigated, not dropped.
@@ -90,7 +93,7 @@ For each registry key on the table the script:
 | `finalize_collection.py` | collection root, schema | DAG-ordered entrypoint; runs every step on every table in dependency order, then the target-join cleanup, the audited leftover-column drop, and the validation sweep. |
 | `assign_uids.py` | collection root, schema, optional `--table` | Assign each table's automatic key — `uid` (stable vs random per the schema declaration), or `zarr_group` for `DatasetSchema` tables; idempotent — preserves existing keys. |
 | `set_dataset_uid.py` | collection root, `--dataset`, `--obs-class` | Stamp the dataset's `uid` onto its obs table(s) as an audited broadcast. |
-| `populate_registry_keys.py` | collection root, schema, optional `--table` | Resolve `*_join` columns against target `uid`s, verify coverage (fail-loud on any unmatched key), fill scalar and position-aligned polymorphic registry-key columns, drop the referencing-side join columns. |
+| `populate_registry_keys.py` | collection root, schema, optional `--table`, optional `--publication-schema` | Seed publication referencing join columns (`0`), resolve `*_join` columns against target `uid`s, verify coverage (fail-loud on any unmatched key), fill scalar and position-aligned polymorphic registry-key columns, drop the referencing-side join columns. |
 | `drop_leftover_columns.py` | collection root, schema, optional `--table` | Drop every column that is not a field of its schema class through an audited `DropColumn` (source data; recorded, not silent). Run after registry keys and the `*_join` cleanup. |
 | `validate_tables.py` | collection root, schema, optional `--table`, `--limit` | Structural + per-row validation of every table against its schema class; exits non-zero and reports any column or value that does not conform. |
 
