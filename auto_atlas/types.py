@@ -1,6 +1,9 @@
-"""Result types for the standardization suite.
+"""Structured types for the standardization and finalization suites.
 
-Every resolver returns structured dataclasses instead of raw dicts or bare strings.
+Every resolver returns one of the :class:`Resolution` dataclasses instead of raw
+dicts or bare strings. The finalization step adds :class:`SchemaInfo` and
+:class:`TableRef`, which describe a target homeobox schema and the concrete Lance
+tables discovered for it (built by ``auto_atlas.util``).
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 import pandas as pd
+from homeobox.schema import ForeignKeyField, PolymorphicForeignKeyField
 
 from auto_atlas.curation.types import MergeColumns, ReplaceValue
 
@@ -230,3 +234,46 @@ class ResolutionReport:
                 row[f.name] = val
             rows.append(row)
         return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Finalization types
+# ---------------------------------------------------------------------------
+#
+# Foreign keys are described by homeobox's own ``ForeignKeyField`` /
+# ``PolymorphicForeignKeyField`` markers — there is no need for parallel local
+# dataclasses. ``auto_atlas.util.load_schema_info`` reconstructs those markers
+# from the parsed schema and hangs them off the ``SchemaInfo`` below.
+
+
+@dataclass
+class SchemaInfo:
+    """Everything the finalization steps need to know about the target schema.
+
+    ``scalar_fks`` / ``poly_fks`` map a source class name to the foreign-key
+    markers declared on it. ``dataset_uid`` (a foreign key whose ``target_field``
+    is not ``uid``) is omitted: it is stamped from ``collection.json``, not
+    resolved by a join.
+    """
+
+    module: Any
+    kinds: dict[str, str]  # class_name -> parser kind (obs/dataset/entity/...)
+    scalar_fks: dict[str, list[ForeignKeyField]] = field(default_factory=dict)
+    poly_fks: dict[str, list[PolymorphicForeignKeyField]] = field(default_factory=dict)
+
+    def live_class(self, class_name: str) -> type | None:
+        return getattr(self.module, class_name, None)
+
+    def has_uid_field(self, class_name: str) -> bool:
+        cls = self.live_class(class_name)
+        return bool(cls is not None and "uid" in getattr(cls, "model_fields", {}))
+
+
+@dataclass
+class TableRef:
+    """A concrete Lance table located in the collection and mapped to a schema class."""
+
+    lance_db_path: str
+    table_name: str
+    class_name: str
+    dataset: str | None  # dataset directory name, or None for collection-level tables
