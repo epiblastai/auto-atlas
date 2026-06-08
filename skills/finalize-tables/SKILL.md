@@ -18,7 +18,7 @@ Finalization is the step that turns a set of independently-harmonized tables int
 
 ## Output
 
-For every table: all automatic columns assigned, all foreign keys populated, transient join/leftover columns removed, and the table validated against its schema class. The collection is now internally linked and schema-conformant.
+For every table: all automatic columns assigned, all foreign keys populated, transient join/leftover columns removed, and the table validated against its schema class. The collection will be internally linked and schema-conformant.
 
 ## Responsibilities (per table, in order)
 
@@ -43,14 +43,6 @@ python skills/finalize-tables/scripts/finalize_collection.py <collection_root> -
 ```
 
 It resolves the DAG, runs the per-table steps in order, and reports what each step changed. The individual scripts below can also be run table-by-table for debugging.
-
-## Why this is a separate skill (audit boundary)
-
-The automatic columns (`uid`, `dataset_uid`, derived fields) are **deterministic functions of the data + schema — no per-value decision and no source to record** — so they are *not* curation and do not go through the audit trail. Finalization writes them directly to Lance (e.g. `add_columns` / `merge_insert`), outside the applicator. Lean toward idempotent fills (fill where null, leave existing).
-
-Foreign keys are slightly different: the *fill* is a deterministic join, but it depends on **which columns to join on** — a decision. That decision is made and recorded upstream during harmonization (the join columns below), so finalization only *applies* a recorded plan and *verifies* it. No new per-value decisions are made here.
-
-Two finalization writes **do** go through the audited applicator, because each removes or broadcasts *source-derived* data rather than computing a deterministic column: stamping `dataset_uid` (a broadcast `AddColumn`/`SetColumn`, below) and dropping non-schema **leftover source columns** (`DropColumn`). The `*_join` scaffolding is exempt — finalization created those columns itself purely as a transient handoff, so deleting them records nothing worth auditing.
 
 ## Stamping `dataset_uid`
 

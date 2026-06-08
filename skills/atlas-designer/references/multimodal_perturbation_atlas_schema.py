@@ -151,7 +151,7 @@ class PublicationSectionSchema(LanceModel):
 # ---------------------------------------------------------------------------
 
 
-class DatasetSchema(DatasetSchema):
+class AtlasDatasetSchema(DatasetSchema):
     publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
     # Database from which the dataset was downloaded, if applicable
     accession_database: str | None
@@ -161,10 +161,11 @@ class DatasetSchema(DatasetSchema):
     dataset_description: str | None
 
     # High-level metadata fields that are useful for searching and grouping datasets.
-    organism: list[str] | None  # ["human", "mouse"] for barnyard
-    tissue: list[str] | None  # ["cortex", "hippocampus"] for multi-region
-    cell_line: list[str] | None  # ["A549", "MCF7", "K562"] for village-in-a-dish
-    disease: list[str] | None  # ["ALS", "healthy"] for case-control
+    # These can be derived from the unique values in CellIndex records within a dataset
+    organism: list[str] | None
+    tissue: list[str] | None
+    cell_line: list[str] | None
+    disease: list[str] | None
 
 
 class DonorSchema(StableUIDBaseSchema):
