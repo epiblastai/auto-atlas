@@ -178,19 +178,10 @@ def _lance_db_dirs(collection_root: str) -> list[tuple[str | None, str]]:
 
 
 def _class_for_table(table_name: str, class_names: list[str]) -> str | None:
-    """Map a concrete table name to its schema class by longest-prefix match.
-
-    A table is either named exactly after its class (``CellIndex``) or carries a
-    feature-space suffix (``CellIndex_gene_expression``). The longest matching
-    class name wins so e.g. ``GenomicFeatureSchema`` is not shadowed by a shorter
-    prefix.
-    """
-    best: str | None = None
-    for cls in class_names:
-        if table_name == cls or table_name.startswith(cls + "_"):
-            if best is None or len(cls) > len(best):
-                best = cls
-    return best
+    """Map a concrete Lance table name to its schema class by exact match."""
+    if table_name in class_names:
+        return table_name
+    return None
 
 
 def discover_tables(collection_root: str, info: SchemaInfo) -> list[TableRef]:
