@@ -14,7 +14,7 @@ Cell lines use a local Cellosaurus table (cell_lines + cell_line_synonyms).
 
 import functools
 from collections import defaultdict
-from enum import Enum
+from enum import StrEnum
 
 import polars as pl
 from homeobox.util import sql_escape
@@ -28,7 +28,7 @@ from auto_atlas.metadata_table import (
 from auto_atlas.types import CellLineResolution, OntologyResolution, ResolutionReport
 
 
-class OntologyEntity(str, Enum):
+class OntologyEntity(StrEnum):
     """Supported ontology entity types for CELLxGENE-compatible resolution."""
 
     CELL_TYPE = "cell_type"
