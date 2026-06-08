@@ -5,7 +5,7 @@ description: Finalize harmonized Lance tables in a data package — assign autom
 
 # Finalize tables
 
-This skill runs *after* `schema-harmonization` has finished on **every** table in a collection (and *after* `multimodal-alignment` on multimodal datasets). Harmonization aligns columns and resolves values (each change applied through the audited `CurationApplicator`). For multimodal datasets, finalization first **joins** per-feature-space obs tables into one table named after the obs schema class, then fills the deterministic, automatic columns, **connects the tables** by resolving registry keys, and checks that each table conforms exactly to its schema.
+This skill runs *after* `schema-harmonization` has finished on **every** table in a collection (and *after* `multimodal-alignment` on multimodal datasets). Harmonization aligns columns and resolves values (each change applied through the audited `CurationApplicator`). For multimodal datasets, finalization first **joins** per-feature-space obs tables into one table named after the obs schema class, then fills the deterministic, automatic columns, **connects the tables** by resolving registry keys, and validates that each table is consistent with its schema for the columns present.
 
 Finalization is the step that turns a set of independently-harmonized tables into a linked collection, so it operates on the **whole collection at once**, not a single table in isolation.
 
@@ -18,7 +18,9 @@ Finalization is the step that turns a set of independently-harmonized tables int
 
 ## Output
 
-For every table: all automatic columns assigned, all registry keys populated, transient join/leftover columns removed, and the table validated against its schema class. The collection will be internally linked and schema-conformant.
+For every table: all automatic columns assigned, all registry keys populated, transient join/leftover columns removed, and the table validated against its schema class. The collection will be internally linked and ready for ingestion.
+
+Finalization does **not** materialize every schema field. Columns that carry schema defaults are not added just because the schema declares them — a missing column stays missing in Lance. Expect finalized tables to omit any field filled at **ingestion** time, including `PointerField` modality pointers and `SummaryField` aggregates (e.g. `n_rows`, dataset-level rollups of obs metadata). Validation checks that present values conform to the schema; it does not require those deferred columns to exist yet.
 
 ## Responsibilities (per table, in order)
 
@@ -30,7 +32,7 @@ For every table: all automatic columns assigned, all registry keys populated, tr
    - **`*_join` scaffolding** (finalization's own transient handoff columns) is dropped **directly to Lance**, unaudited: the referencing-side `{field}_{target}_join` columns as each registry key is filled, and the target-side `{target}_join` columns once the whole collection's registry keys are resolved (a collection-level step, since one target column is shared by every referrer).
    - **Non-schema leftovers** (original *source* columns never mapped to a schema field) are dropped through the **audited** `CurationApplicator.DropColumn` — removing source data is recorded, never silent. This runs last, after the `*_join` cleanup and the whole DAG pass, so only genuine leftovers remain.
 
-   Validation then constructs each row against the target schema class so the table matches it exactly; any remaining non-conformance is a hard error, not a silent fix.
+   Validation constructs each row against the target schema class using the columns present (schema defaults apply to absent fields). Any value-level non-conformance is a hard error, not a silent fix. Missing ingestion-deferred columns are expected and are not an error.
 
 ## Whole-collection order is a DAG
 
