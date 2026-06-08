@@ -93,9 +93,13 @@ This is stricter than the value-resolution rule below: it covers every field inc
 
 Resolution maps raw values to canonical identifiers per domain. Per-domain references hold the specific considerations and worked examples:
 
+- **references/dataset_resolution.md** — per-dataset `DatasetSchema` descriptive metadata (one row per feature space).
 - **references/gene_resolution.md** — gene symbols and Ensembl IDs (var-level), with a full worked example.
+- **references/genetic_perturbation_resolution.md** — genetic perturbation targets, reagents, guide sequences, and row-multiplying reshapes.
+- **references/molecule_resolution.md** — small-molecule names, SMILES, and PubChem CIDs to canonical structures.
+- **references/ontology_resolution.md** — free-text biological metadata to ontology term labels (obs / cell-index fields).
+- **references/protein_resolution.md** — protein aliases, antibody targets, and UniProt accessions.
 - **references/publication_resolution.md** — collection-level publication and section tables (mostly column alignment).
-- Other domains (ontology terms, proteins, molecules, genetic perturbation targets) follow the same pattern in their own references under `references/`.
 
 ## Conventions
 
