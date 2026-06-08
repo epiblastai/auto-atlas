@@ -1,6 +1,6 @@
 ---
 name: geo-data-curator
-description: Use this skill to write scripts for ingesting GEO datasets into a homeobox RaggedAtlas. Requires a user-provided schema file, a new or existing path to the atlas, and outputs from the geo-data-preparer skill. Covers atlas creation or appending, feature registration, foreign key tables, and validation.
+description: Use this skill to write scripts for ingesting GEO datasets into a homeobox RaggedAtlas. Requires a user-provided schema file, a new or existing path to the atlas, and outputs from the geo-data-preparer skill. Covers atlas creation or appending, feature registration, registry key tables, and validation.
 ---
 
 # GEO Data Curator
@@ -12,7 +12,7 @@ This skill writes per-accession ingestion scripts that take the prepared and sta
 1. **Assembling** resolver fragment CSVs into standardized obs/var CSVs
 2. **Validating** obs DataFrames against the schema (stripping non-schema columns, parsing JSON lists, coercing types)
 3. **Creating or opening** a `RaggedAtlas` at the user-provided path
-4. **Populating foreign key tables** (perturbation registries, publications, donors, etc.)
+4. **Populating registry key tables** (perturbation registries, publications, donors, etc.)
 5. **Registering features** in the atlas feature registries
 6. **Ingesting data** (zarr writes + validated obs) via `add_anndata_batch` or `add_coo_batch`
 
@@ -24,7 +24,7 @@ This skill consumes outputs from the `geo-data-preparer` skill. Before starting,
 
 - **Fragment CSVs** per experiment: `{fs}_fragment_*_obs.csv`, `{fs}_raw_obs.csv`, `{fs}_raw_var.csv` — produced by the preparer and its resolver subagents
 - **Finalized global tables**: `{SchemaClassName}.parquet` (e.g., `GenomicFeatureSchema.parquet`, `GeneticPerturbationSchema.parquet`, `PublicationSchema.parquet`) — these are the type-coerced parquet outputs from the resolvers, NOT the `_resolved.csv` files
-- **Schema file path** — the Python file with `HoxBaseSchema`, `FeatureBaseSchema`, `DatasetSchema`, and foreign key schema classes
+- **Schema file path** — the Python file with `HoxBaseSchema`, `FeatureBaseSchema`, `DatasetSchema`, and registry key schema classes
 - **Atlas path** — directory for the atlas (new or existing), containing `lance_db/` and `zarr_store/`
 - **Data files** — the h5ad, mtx bundles, COO triplet files, or other matrix files for each experiment
 - **metadata.json** — GEO series/sample metadata (written by `geo-data-preparer`)
@@ -56,7 +56,7 @@ Note: var/FK table finalization is already handled by resolvers during preparati
 Check that all expected files exist before writing any ingestion code:
 
 - Per-experiment fragment CSVs: `{experiment_dir}/{fs}_fragment_*_obs.csv`, `{fs}_raw_obs.csv`, `{fs}_raw_var.csv`, and `{fs}_standardized_var.csv` (written by gene-resolver)
-- Global finalized parquets at accession level: `{SchemaClassName}.parquet` for each feature registry and foreign key schema used (including `PublicationSchema.parquet`)
+- Global finalized parquets at accession level: `{SchemaClassName}.parquet` for each feature registry and registry key schema used (including `PublicationSchema.parquet`)
 - Data files (h5ad, COO triplet matrices, mtx bundles, etc.) for each experiment
 - `metadata.json` and `publication.json` at the accession level (publication.json includes `publication_uid`)
 
@@ -103,7 +103,7 @@ Read the schema file to identify:
 - The **obs schema** (`HoxBaseSchema` subclass) — e.g., `CellIndex`
 - The **dataset schema** (`DatasetSchema` subclass) — e.g., `DatasetSchema`
 - **Feature registry schemas** (`FeatureBaseSchema` subclasses) — e.g., `GenomicFeatureSchema`, `ProteinSchema`
-- **Foreign key schemas** (`LanceModel` subclasses that are not feature registries) — e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `PublicationSchema`
+- **Registry key schemas** (`LanceModel` subclasses that are not feature registries) — e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `PublicationSchema`
 
 Determine which feature spaces are present in this dataset from the standardized CSV filenames.
 
@@ -144,11 +144,11 @@ atlas = RaggedAtlas.open(
 
 When opening an existing atlas, you may need to create new registry tables if this dataset introduces a feature space the atlas doesn't already have.
 
-### 5. Create foreign key tables
+### 5. Create registry key tables
 
 **Important:** Create publications first, since `DatasetSchema.publication_uid` references the publication record's UID. Read the `publication_uid` from the resolver's parquet output for use in step 7.
 
-All foreign key tables follow the same pattern — load the finalized parquet from the resolver and add it to LanceDB:
+All registry key tables follow the same pattern — load the finalized parquet from the resolver and add it to LanceDB:
 
 **Publication table** — from `PublicationSchema.parquet`:
 
@@ -180,7 +180,7 @@ if section_parquet.exists():
     section_table.add(pa.Table.from_pandas(section_df, schema=PublicationSectionSchema.to_arrow_schema()))
 ```
 
-**Perturbation / other foreign key tables** — same pattern:
+**Perturbation / other registry key tables** — same pattern:
 
 ```python
 # Read the finalized parquet (types are already correct)
@@ -195,7 +195,7 @@ else:
 table.add(pa.Table.from_pandas(fk_df, schema=SchemaClass.to_arrow_schema()))
 ```
 
-Foreign key table naming convention:
+Registry key table naming convention:
 - `publications` for `PublicationSchema`
 - `publication_sections` for `PublicationSectionSchema`
 - `genetic_perturbations` for `GeneticPerturbationSchema`
@@ -335,14 +335,14 @@ print(f"Ingestion complete for {accession}")
 print(f"  Entries: {n_entries}")
 print(f"  Total cells ingested: {total_cells:,}")
 print(f"  Feature spaces: {feature_spaces}")
-print(f"  Foreign key records: {n_fk_records}")
+print(f"  Registry key records: {n_fk_records}")
 ```
 
 **IMPORTANT: NEVER call `atlas.optimize()` or `atlas.snapshot()` in an ingestion script.** These are expensive operations that should only be run manually by the user after all datasets have been ingested. Ingestion scripts must only add data.
 
 ## Reconciling Obs with Foreign Key Tables
 
-Standardized obs CSVs may contain list columns that reference foreign key tables:
+Standardized obs CSVs may contain list columns that reference registry key tables:
 
 - `perturbation_uids` — JSON-encoded list of UIDs (e.g., `["uid1", "uid2"]`)
 - `perturbation_types` — JSON-encoded list determining which FK table each UID references (e.g., `["genetic_perturbation", "small_molecule"]`)

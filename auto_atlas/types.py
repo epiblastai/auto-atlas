@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 import pandas as pd
-from homeobox.schema import ForeignKeyField, PolymorphicForeignKeyField
+from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField
 
 from auto_atlas.curation.types import MergeColumns, ReplaceValue
 
@@ -240,8 +240,8 @@ class ResolutionReport:
 # Finalization types
 # ---------------------------------------------------------------------------
 #
-# Foreign keys are described by homeobox's own ``ForeignKeyField`` /
-# ``PolymorphicForeignKeyField`` markers — there is no need for parallel local
+# Registry keys are described by homeobox's own ``RegistryKeyField`` /
+# ``PolymorphicRegistryKeyField`` markers — there is no need for parallel local
 # dataclasses. ``auto_atlas.util.load_schema_info`` reconstructs those markers
 # from the parsed schema and hangs them off the ``SchemaInfo`` below.
 
@@ -250,16 +250,16 @@ class ResolutionReport:
 class SchemaInfo:
     """Everything the finalization steps need to know about the target schema.
 
-    ``scalar_fks`` / ``poly_fks`` map a source class name to the foreign-key
-    markers declared on it. ``dataset_uid`` (a foreign key whose ``target_field``
+    ``scalar_fks`` / ``poly_fks`` map a source class name to the registry-key
+    markers declared on it. ``dataset_uid`` (a registry key whose ``target_field``
     is not ``uid``) is omitted: it is stamped from ``collection.json``, not
     resolved by a join.
     """
 
     module: Any
     kinds: dict[str, str]  # class_name -> parser kind (obs/dataset/entity/...)
-    scalar_fks: dict[str, list[ForeignKeyField]] = field(default_factory=dict)
-    poly_fks: dict[str, list[PolymorphicForeignKeyField]] = field(default_factory=dict)
+    scalar_fks: dict[str, list[RegistryKeyField]] = field(default_factory=dict)
+    poly_fks: dict[str, list[PolymorphicRegistryKeyField]] = field(default_factory=dict)
 
     def live_class(self, class_name: str) -> type | None:
         return getattr(self.module, class_name, None)

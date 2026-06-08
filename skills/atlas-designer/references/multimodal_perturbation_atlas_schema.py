@@ -10,13 +10,14 @@ from homeobox.schema import (
     CrossReferenceField,
     DatasetSchema,
     FeatureBaseSchema,
-    ForeignKeyField,
     HoxBaseSchema,
     OntologyAlignedField,
     PointerField,
-    PolymorphicForeignKeyField,
+    PolymorphicRegistryKeyField,
+    RegistryKeyField,
     StableUIDBaseSchema,
     StableUIDField,
+    SummaryField,
     _iter_pointer_annotations,
     combine_markers,
     make_uid,
@@ -136,7 +137,7 @@ class PublicationSchema(StableUIDBaseSchema):
 
 
 class PublicationSectionSchema(LanceModel):
-    publication_uid: str = ForeignKeyField.declare(target_schema=PublicationSchema)
+    publication_uid: str = RegistryKeyField.declare(target_schema=PublicationSchema)
 
     # Section-level fields (one row per section)
     # The text content of this section
@@ -152,7 +153,7 @@ class PublicationSectionSchema(LanceModel):
 
 
 class AtlasDatasetSchema(DatasetSchema):
-    publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
+    publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
     # Database from which the dataset was downloaded, if applicable
     accession_database: str | None
     accession_id: str | None
@@ -161,11 +162,37 @@ class AtlasDatasetSchema(DatasetSchema):
     dataset_description: str | None
 
     # High-level metadata fields that are useful for searching and grouping datasets.
-    # These can be derived from the unique values in CellIndex records within a dataset
-    organism: list[str] | None
-    tissue: list[str] | None
-    cell_line: list[str] | None
-    disease: list[str] | None
+    organism: list[str] | None = SummaryField.declare(
+        target_schema="CellIndex",
+        target_field="organism",
+        op="unique",
+        default=None,
+    )
+    tissue: list[str] | None = SummaryField.declare(
+        target_schema="CellIndex",
+        target_field="tissue",
+        op="unique",
+        default=None,
+    )
+    cell_line: list[str] | None = SummaryField.declare(
+        target_schema="CellIndex",
+        target_field="cell_line",
+        op="unique",
+        default=None,
+    )
+    disease: list[str] | None = SummaryField.declare(
+        target_schema="CellIndex",
+        target_field="disease",
+        op="unique",
+        default=None,
+    )
+
+    n_rows: int = SummaryField.declare(
+        target_schema="CellIndex",
+        target_field="uid",
+        op="count",
+        default=0,
+    )
 
 
 class DonorSchema(StableUIDBaseSchema):
@@ -444,7 +471,7 @@ class CellIndex(HoxBaseSchema):
     development_stage: str | None
     disease: str | None = OntologyAlignedField.declare(ontology_name="MONDO")
     tissue: str | None = OntologyAlignedField.declare(ontology_name="UBERON")
-    donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
+    donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
     # Number of days the cells were cultured in vitro before profiling, if applicable.
     days_in_vitro: float | None
     # Json dump string with additional metadata that doesn't fit in the schema
@@ -471,7 +498,7 @@ class CellIndex(HoxBaseSchema):
     # any other such combination. Lists must have exactly matching lengths.
     # UIDs and types go together: the type selects which perturbation table
     # the uid refers to.
-    perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+    perturbation_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
         type_field="perturbation_types",
         variants={
             "small_molecule": SmallMoleculeSchema,

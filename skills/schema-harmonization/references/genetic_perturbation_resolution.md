@@ -154,7 +154,7 @@ Where a field can come from more than one place, prefer the most authoritative s
 - **Library / screen-identifier fields** — prefer the library metadata file itself, then raw columns, then publication text.
 - **Genomic location fields** (chromosome, start, end, strand) — prefer explicit columns from a library or manifest; otherwise infer from `resolve_guide_sequences()` or `annotate_genomic_coordinates()`. If absent, deterministically parse coordinates from reagent IDs only when the identifier format encodes them. Convert chromosome naming with `get_assembly_report()`.
 - **Target-context fields** — prefer explicit annotation from the library; otherwise infer from the guide/coordinate resolvers.
-- **Cross-reference (UID / foreign-key) fields** that point at a record in another table — populate only when the target can be mapped unambiguously to a record already available to the workflow; otherwise leave null and justify it in the report.
+- **Cross-reference (UID / registry-key) fields** that point at a record in another table — populate only when the target can be mapped unambiguously to a record already available to the workflow; otherwise leave null and justify it in the report.
 - **Perturbation-modality fields** — the technique is sometimes in a library file and sometimes only in collection-level metadata such as the publication; normalize whatever string you find with `classify_perturbation_method()`.
 
 ## Worked example: dual-guide CRISPRi library

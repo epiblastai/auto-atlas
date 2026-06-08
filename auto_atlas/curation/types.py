@@ -284,7 +284,7 @@ class AppliedChange:
 class ApplyResult:
     """Result of applying a CurationTransaction."""
 
-    transaction_id: str  # foreign key to CurationTransaction
+    transaction_id: str  # registry key to CurationTransaction
     status: TransactionStatus
 
     # Checkout this Lance version to undo the entire transaction

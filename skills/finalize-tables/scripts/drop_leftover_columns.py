@@ -8,7 +8,7 @@ every other column removal in this pipeline — it goes through the audited
 ``CurationApplicator.DropColumn`` rather than a silent direct-to-Lance write.
 
 A *leftover* is any column on the table that is not a field of its schema class.
-This step must run **last** — after the uid / dataset_uid / foreign-key / derived
+This step must run **last** — after the uid / dataset_uid / registry-key / derived
 fills and the ``*_join`` cleanup — so that every column the schema expects is
 present and only genuine leftovers remain to drop.
 

@@ -21,7 +21,7 @@ Handles two input types that may co-exist in a single dataset:
 
 **Output:**
 
-*Accession-level (global foreign key table):*
+*Accession-level (global registry key table):*
 - `SmallMolecule_resolved.csv` — all raw columns plus resolved columns, UIDs, `resolved` boolean. Full intermediate output for inspection and debugging.
 - `SmallMoleculeSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, no `resolved` column, no raw columns. Parquet preserves types so the file can be loaded directly into LanceDB.
 - `resolver_reports/molecule-resolver.md` — markdown report written in the working directory. Summarize enrichment sources used, outputs written, counts, unresolved items, and a field-by-field blank justification audit.
@@ -237,7 +237,7 @@ After finalization and obs-fragment writing, write `resolver_reports/molecule-re
 
 ## Phase B: Per-Experiment Obs Fragments
 
-### B1. Load the resolved foreign key table
+### B1. Load the resolved registry key table
 
 Load `SmallMoleculeSchema.parquet` (the finalized table with UIDs). Build a lookup from compound identifiers such as `name` or `pubchem_cid` to `uid` values.
 

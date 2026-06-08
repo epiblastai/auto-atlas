@@ -41,6 +41,9 @@ line-length = 100
 target-version = "py312"
 exclude = ["notebooks/"]
 
+[tool.uv.sources]
+homeobox = { git = "https://github.com/epiblastai/homeobox.git", branch = "main" }
+
 [tool.ruff.lint]
 select = [
     "E",      # pycodestyle errors
