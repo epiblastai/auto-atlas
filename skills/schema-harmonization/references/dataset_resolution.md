@@ -1,24 +1,14 @@
 # Dataset table resolution
 
-Every dataset directory carries a `DatasetSchema` table, staged with **one row per feature space**. Its identity columns (`dataset_uid`, `feature_space`) are already filled from `collection.json`. Harmonization fills the table's *descriptive* metadata and records the dataset's publication link, and leaves the automatic and ingestion-deferred columns alone.
+Every dataset directory carries a `DatasetSchema` table, staged with **one row per feature space**. Its identity columns (`dataset_uid`, `feature_space`) are already filled from `collection.json`. Harmonization fills the table's *descriptive* metadata and leaves automatic, publication-link, and ingestion-deferred columns alone.
 
 The `DatasetSchema` row describes the dataset as a whole, so the same dataset-level value is written to every per-feature-space row. Its columns fall into three groups, each handled differently.
 
 ## 1. Descriptive metadata — fill it
 
-The free-text and accession-style descriptors of the dataset — for example an accession database and id, and a dataset description — come from the dataset's own metadata: the collection/dataset manifest, an accession record (e.g. a GEO series or sample), or publication text coalesced into the package. Fill them with audited ops, under the same discipline as any nullable field:
+The free-text and accession-style descriptors of the dataset — for example an accession database and id, and a dataset description — come from the dataset's own metadata: the collection/dataset manifest, an accession record (e.g. a GEO series or sample), or other coalesced package files. Fill them with audited ops, under the same discipline as any nullable field.
 
-<!---TODO: This is overfit to a particular example. We should not resolve publication related fields in this skill. Instead we need to craft a custom publication harmonization skill that fills any publication related tables and also handles the filling of publication-related columns in dataset-level tables. Our assertion is that there is 1 publication per collection s.t. we can fill values in other tables trivially with AddColumn or SetColumn.-->
-## 2. The publication registry key — record its join key
-
-The dataset's link to its publication row is a registry key (`publication_uid`). As with every registry key, harmonization does **not** fill the uid; it records the natural join key so finalization can resolve it once uids exist:
-
-- On the dataset table, write `publication_uid_PublicationSchema_join` holding the publication's natural key (an accession, a DOI, whatever identifies the publication row).
-- On the publication table, expose the matching key as `PublicationSchema_join`.
-
-A collection is associated with a single publication, so this key is typically one constant value across all dataset rows. Record it anyway — the link is then explicit and resolves through the same mechanism as every other registry key, rather than being a special case.
-
-## 3. Automatic and summary columns — leave them
+## 2. Automatic and summary columns — leave them
 
 Two kinds of column on this table are not harmonization's to fill:
 
@@ -29,6 +19,6 @@ Two kinds of column on this table are not harmonization's to fill:
 
 - Fill descriptive metadata; never fill `dataset_uid`, `zarr_group`, or any `SummaryField`-marked column.
 - Write the same dataset-level value to every per-feature-space row of the table.
-- Record the publication link as a `*_join` natural key, never as a uid.
+- Do not record publication registry join keys here — one publication per collection makes that a separate concern that is handled automatically.
 - A `SummaryField`-marked column is filled downstream at ingestion; skipping it here is correct, not an omission.
 - Apply every fill as an audited transaction, like all harmonization.

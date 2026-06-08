@@ -13,7 +13,8 @@ Every other column is added later by whoever fills it, the same way obs/var
 tables gain their schema columns downstream:
 
 - ``zarr_group`` and other automatic columns — finalization (like ``uid``).
-- descriptive metadata and the publication join key — schema-harmonization.
+- descriptive metadata — schema-harmonization.
+- publication registry keys — publication harmonization (future).
 - ``SummaryField`` aggregates (``n_rows``, ``organism``, …) — ingestion.
 
 The identity columns are written with the schema class's own Arrow field types so

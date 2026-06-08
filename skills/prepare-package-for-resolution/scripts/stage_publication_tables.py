@@ -8,8 +8,14 @@ collection-level publication registry tables.
 Field mapping follows ``publication.json`` exactly — only keys present in the
 file are written. Top-level keys other than ``text_data`` go to the
 publication table; ``text_data.section_title`` / ``text_data.section_text``
-become section rows. Staged columns usually will not yet conform to the
-homeobox schema; downstream skills align and finalize them.
+become section rows.
+
+Each collection has a single publication, so staging also seeds the ``*_join``
+scaffolding that ``finalize-tables`` expects: ``{pub_schema}_join = 0`` on the
+publication table, and ``{field}_{pub_schema}_join = 0`` on the section table
+when it references the publication registry (discovered via ``--schema`` or
+``--pub-fk-field``). Staged columns usually will not yet conform to the homeobox
+schema; downstream skills align and finalize them.
 
 Three modes (provide at least one schema argument):
 
@@ -24,12 +30,16 @@ Usage:
     python scripts/stage_publication_tables.py <collection_root> \\
         [--pub-schema PublicationSchema] \\
         [--pub-section-schema PublicationSectionSchema] \\
+        [--schema <path/to/schema.py>] \\
+        [--pub-fk-field FIELD] \\
         [--publication-json PATH]
 
 Arguments:
     collection_root       Root directory of a coalesced collection
     --pub-schema          CamelCase Lance table for the publication registry
     --pub-section-schema  CamelCase Lance table for publication text sections
+    --schema              Homeobox schema file (discover section-table RegistryKeyFields)
+    --pub-fk-field        Registry-key field on the section table (repeatable; overrides --schema)
     --publication-json    Path to publication.json (default: discover from manifest)
 """
 
@@ -43,10 +53,13 @@ import lancedb
 import pandas as pd
 
 from auto_atlas.collection import FileTypeTag
+from auto_atlas.types import SchemaInfo
+from auto_atlas.util import load_schema_info
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"
 PUBLICATION_FILENAME = "publication.json"
+PUBLICATION_JOIN_VALUE = 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -67,6 +80,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--publication-json",
         help="Path to publication.json (absolute or relative to collection root)",
+    )
+    parser.add_argument(
+        "--schema",
+        help="Path to the homeobox schema Python file (for RegistryKeyField discovery)",
+    )
+    parser.add_argument(
+        "--pub-fk-field",
+        action="append",
+        default=[],
+        dest="pub_fk_fields",
+        metavar="FIELD",
+        help=(
+            "Registry-key field on the section table that references --pub-schema "
+            "(repeatable; overrides --schema discovery)"
+        ),
     )
     args = parser.parse_args(argv)
     if not args.pub_schema and not args.pub_section_schema:
@@ -141,7 +169,49 @@ def extract_pub_fields(publication: dict) -> dict:
     return {key: value for key, value in publication.items() if key != "text_data"}
 
 
-def build_section_rows(publication: dict, *, denormalize: bool) -> list[dict]:
+def target_join_column(pub_schema: str) -> str:
+    return f"{pub_schema}_join"
+
+
+def referencing_join_column(fk_field: str, pub_schema: str) -> str:
+    return f"{fk_field}_{pub_schema}_join"
+
+
+def resolve_pub_fk_fields(
+    pub_schema: str,
+    section_schema: str,
+    schema_info: SchemaInfo | None,
+    explicit_fields: list[str],
+) -> list[str]:
+    if explicit_fields:
+        return explicit_fields
+    if schema_info is None:
+        return []
+    return [
+        fk.field_name
+        for fk in schema_info.scalar_fks.get(section_schema, [])
+        if fk.target_schema == pub_schema
+    ]
+
+
+def add_target_join(row: dict, pub_schema: str) -> dict:
+    row[target_join_column(pub_schema)] = PUBLICATION_JOIN_VALUE
+    return row
+
+
+def add_referencing_joins(row: dict, pub_schema: str, fk_fields: list[str]) -> dict:
+    for field in fk_fields:
+        row[referencing_join_column(field, pub_schema)] = PUBLICATION_JOIN_VALUE
+    return row
+
+
+def build_section_rows(
+    publication: dict,
+    *,
+    denormalize: bool,
+    pub_schema: str | None = None,
+    pub_fk_fields: list[str] | None = None,
+) -> list[dict]:
     text_data = publication.get("text_data") or {}
     titles = text_data.get("section_title") or []
     texts = text_data.get("section_text") or []
@@ -155,10 +225,12 @@ def build_section_rows(publication: dict, *, denormalize: bool) -> list[dict]:
     pub_fields = extract_pub_fields(publication) if denormalize else {}
 
     rows: list[dict] = []
-    for title, text in zip(titles, texts, strict=False):
+    for title, text in zip(titles, texts, strict=True):
         row = {"section_title": title, "section_text": text}
         if denormalize:
             row.update(pub_fields)
+        elif pub_schema is not None and pub_fk_fields:
+            add_referencing_joins(row, pub_schema, pub_fk_fields)
         rows.append(row)
     return rows
 
@@ -174,6 +246,7 @@ def main(argv: list[str] | None = None) -> None:
     publication_path = find_publication_json(collection_root, args.publication_json)
     warn_if_not_tagged_publication(collection_root, publication_path)
     publication = load_publication_json(publication_path)
+    schema_info = load_schema_info(args.schema) if args.schema else None
 
     lance_path = os.path.join(collection_root, LANCE_DB_DIR)
     os.makedirs(lance_path, exist_ok=True)
@@ -181,13 +254,34 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"Loaded {publication_path}")
 
+    pub_fk_fields: list[str] = []
+    if args.pub_schema and args.pub_section_schema:
+        pub_fk_fields = resolve_pub_fk_fields(
+            args.pub_schema,
+            args.pub_section_schema,
+            schema_info,
+            args.pub_fk_fields,
+        )
+        if not pub_fk_fields:
+            raise ValueError(
+                "Section table references the publication registry but no join field "
+                "was found. Pass --schema to discover RegistryKeyFields on "
+                f"{args.pub_section_schema!r}, or pass --pub-fk-field explicitly."
+            )
+
     if args.pub_schema:
-        pub_df = pd.DataFrame([extract_pub_fields(publication)])
+        pub_row = add_target_join(extract_pub_fields(publication), args.pub_schema)
+        pub_df = pd.DataFrame([pub_row])
         stage_table(db, args.pub_schema, pub_df)
 
     if args.pub_section_schema:
         denormalize = args.pub_schema is None
-        section_rows = build_section_rows(publication, denormalize=denormalize)
+        section_rows = build_section_rows(
+            publication,
+            denormalize=denormalize,
+            pub_schema=args.pub_schema,
+            pub_fk_fields=pub_fk_fields,
+        )
         if not section_rows:
             print("warning: no text sections found in publication.json text_data")
         section_df = pd.DataFrame(section_rows)
