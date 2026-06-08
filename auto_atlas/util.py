@@ -13,7 +13,7 @@ from typing import Any
 import lancedb
 import pyarrow as pa
 from homeobox.parser import parse_schema_module
-from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField
+from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField, SummaryField
 
 from auto_atlas.types import SchemaInfo, TableRef
 
@@ -81,15 +81,31 @@ def load_schema_info(schema_path: str) -> SchemaInfo:
     Registry keys are returned as homeobox's own ``RegistryKeyField`` /
     ``PolymorphicRegistryKeyField`` markers. The parser flattens a polymorphic FK
     into one relationship per variant; those are recombined here into a single
-    marker per field.
+    marker per field. ``SummaryField`` markers are read off each field dict (the
+    parser hangs a ``summary`` key on derived fields) and grouped by class.
     """
     module = load_schema_module(schema_path)
     parsed = parse_schema_module(module)
 
     kinds: dict[str, str] = {}
+    summary_fields: dict[str, list[SummaryField]] = {}
     for table in [parsed.get("obs"), parsed.get("dataset"), *parsed.get("tables", [])]:
-        if table is not None:
-            kinds[table["class_name"]] = table["kind"]
+        if table is None:
+            continue
+        class_name = table["class_name"]
+        kinds[class_name] = table["kind"]
+        for f in table.get("fields", []):
+            summary = f.get("summary")
+            if summary is None:
+                continue
+            summary_fields.setdefault(class_name, []).append(
+                SummaryField(
+                    field_name=f["name"],
+                    target_schema=summary["target_schema"],
+                    target_field=summary["target_field"],
+                    op=summary["op"],
+                )
+            )
 
     scalar_fks: dict[str, list[RegistryKeyField]] = {}
     # (source, field, type_field, target_field) -> {variant: target_schema}
@@ -126,7 +142,13 @@ def load_schema_info(schema_path: str) -> SchemaInfo:
             )
         )
 
-    return SchemaInfo(module=module, kinds=kinds, scalar_fks=scalar_fks, poly_fks=poly_fks)
+    return SchemaInfo(
+        module=module,
+        kinds=kinds,
+        scalar_fks=scalar_fks,
+        poly_fks=poly_fks,
+        summary_fields=summary_fields,
+    )
 
 
 # ---------------------------------------------------------------------------
