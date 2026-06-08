@@ -88,4 +88,4 @@ Unmatched cells still receive a `multimodal_barcode` (the normalized form of the
 
 `multimodal_barcode` is a curation column, not necessarily a schema field. Harmonization may rename or map it if the target schema declares a barcode field; otherwise it remains as a join key.
 
-After harmonization, the **finalize-tables** skill's `join_feature_space_obs.py` merges the per-feature-space obs tables into one table named after the obs schema class (outer join on `multimodal_barcode`), then drops the suffixed source tables.
+After harmonization, the **finalize-tables** skill's `join_feature_space_obs.py` merges the per-feature-space obs tables into one table named after the obs schema class (outer join on `multimodal_barcode`). Suffixed tables are kept for ingestion: after finalization assigns `uid` on the joined table, `stamp_uid_on_feature_space_obs.py` copies those `uid` values back so each modality's DATA row index can be resolved by `uid` lookup.

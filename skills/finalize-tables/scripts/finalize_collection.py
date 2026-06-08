@@ -9,6 +9,7 @@ never hard-coded.
 Per table, in order:
 
 1. assign ``uid`` / ``zarr_group``      (assign_uids)
+1b. stamp ``uid`` on feature-space obs  (multimodal only; stamp_uid_on_feature_space_obs)
 2. stamp ``dataset_uid``  (obs only)    (set_dataset_uid)
 3. populate registry keys                (populate_registry_keys)
 4. ``compute_auto_fields``  (obs only)  — derived columns, after registry keys
@@ -33,6 +34,7 @@ from drop_leftover_columns import drop_leftovers_for_table
 from join_feature_space_obs import join_collection
 from populate_registry_keys import populate_fks_for_table
 from set_dataset_uid import set_dataset_uid
+from stamp_uid_on_feature_space_obs import stamp_uid_on_feature_space_obs
 from validate_tables import validate_table
 
 from auto_atlas.types import SchemaInfo, TableRef
@@ -137,6 +139,7 @@ def finalize_collection(
     print(f"Finalization order: {[c for c in order if c in present]}\n")
 
     stamped: set[tuple[str | None, str]] = set()
+    uid_stamped: set[tuple[str, str]] = set()
 
     for class_name in order:
         class_refs = tables_for_class(refs, class_name)
@@ -147,6 +150,16 @@ def finalize_collection(
         for ref in class_refs:
             # 1. uid
             assign_uids_for_table(ref, info, dry_run=dry_run)
+            # 1b. uid on feature-space obs (multimodal ingestion index), once per (dataset, class)
+            if kind == "obs" and ref.dataset is not None:
+                uid_key = (ref.dataset, class_name)
+                if uid_key not in uid_stamped:
+                    stamp_uid_on_feature_space_obs(
+                        ref.lance_db_path,
+                        obs_class=class_name,
+                        dry_run=dry_run,
+                    )
+                    uid_stamped.add(uid_key)
             # 2. dataset_uid (obs only), once per (dataset, class)
             if kind == "obs" and ref.dataset is not None:
                 key = (ref.dataset, class_name)

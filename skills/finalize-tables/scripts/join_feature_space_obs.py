@@ -3,8 +3,9 @@
 After ``multimodal-alignment`` has written ``multimodal_barcode`` on each
 ``{obs_class}_{feature_space}`` obs table and harmonization has run on those
 tables, this script outer-joins them on ``multimodal_barcode`` and writes a
-single table named after the obs schema class (e.g. ``CellIndex``). The
-per-feature-space source tables are dropped once the joined table is written.
+single table named after the obs schema class (e.g. ``CellIndex``). Per-feature-
+space source tables are kept in Lance for ingestion-time DATA row lookup (see
+``stamp_uid_on_feature_space_obs.py``).
 
 Single-modality datasets (already staged as the bare obs class name) are skipped.
 
@@ -36,6 +37,28 @@ OBS_INDEX_COLUMN = "obs_index"
 _SKIP_COALESCE = frozenset({OBS_INDEX_COLUMN})
 
 
+def assert_unique_multimodal_barcode(df: pd.DataFrame, table_name: str) -> None:
+    """Fail when ``multimodal_barcode`` is not unique (including multiple nulls)."""
+    if JOIN_KEY not in df.columns:
+        raise ValueError(f"Column {JOIN_KEY!r} not in {table_name!r}")
+    keys: list[object] = []
+    for value in df[JOIN_KEY]:
+        if is_null(value):
+            keys.append(None)
+        else:
+            keys.append(value)
+    seen: set[object] = set()
+    duplicates: list[object] = []
+    for key in keys:
+        if key in seen:
+            duplicates.append(key)
+        seen.add(key)
+    if duplicates:
+        sample = duplicates[:5]
+        n = len(duplicates)
+        raise ValueError(f"{table_name}: {n} duplicate {JOIN_KEY} value(s); examples: {sample}")
+
+
 def suffixed_obs_tables(lance_path: str, obs_class: str) -> dict[str, str]:
     """Map feature_space -> suffixed obs table name when multimodal tables exist."""
     db = lancedb.connect(lance_path)
@@ -53,11 +76,7 @@ def _read_obs_table(lance_path: str, table_name: str) -> pd.DataFrame:
             f"Run multimodal-alignment first. Available: {list(arrow.column_names)}"
         )
     df = arrow.to_pandas()
-    dupes = df[JOIN_KEY].duplicated(keep=False) & df[JOIN_KEY].notna()
-    if dupes.any():
-        n = int(dupes.sum())
-        print(f"  warning: {table_name}: {n} duplicate {JOIN_KEY} value(s); keeping first")
-        df = df.drop_duplicates(subset=[JOIN_KEY], keep="first")
+    assert_unique_multimodal_barcode(df, table_name)
     return df
 
 
@@ -136,6 +155,7 @@ def join_feature_space_obs(
         for feature_space, table_name in tables_by_space.items()
     }
     merged = merge_obs_tables(frames)
+    assert_unique_multimodal_barcode(merged, obs_class)
     matched = merged[JOIN_KEY].notna().sum()
     print(f"  joined: {len(merged)} row(s), {len(merged.columns)} column(s), {matched} keyed")
 
@@ -147,10 +167,8 @@ def join_feature_space_obs(
     arrow = pa.Table.from_pandas(merged, preserve_index=False)
     db.create_table(obs_class, data=arrow, mode="overwrite")
     print(f"  wrote {obs_class}: {arrow.num_rows} row(s)")
-
-    for table_name in tables_by_space.values():
-        db.drop_table(table_name)
-        print(f"  dropped {table_name}")
+    kept = ", ".join(tables_by_space.values())
+    print(f"  kept feature-space tables for ingestion lookup: {kept}")
 
     return True
 
