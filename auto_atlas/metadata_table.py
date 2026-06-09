@@ -399,8 +399,8 @@ class CellLineSynonymRecord(LanceModel):
 
 
 def _is_remote_path(path: str) -> bool:
-    """Check if a path is a remote URI (S3, GCS, Azure)."""
-    return path.startswith(("s3://", "gs://", "az://"))
+    """Check if a path is a remote URI (S3, GCS, Azure, Hugging Face)."""
+    return path.startswith(("s3://", "gs://", "az://", "hf://"))
 
 
 def _config_reference_db() -> dict:
@@ -508,7 +508,8 @@ def configure_reference_db(
     Parameters
     ----------
     db_path:
-        Path or URI to the reference DB (e.g. ``"s3://bucket/reference_db/"``).
+        Path or URI to the reference DB (e.g. ``"s3://bucket/reference_db/"`` or
+        ``"hf://datasets/org/dataset/"``).
         If ``None``, the existing/default path is kept (the default is
         ``DEFAULT_REFERENCE_DB_PATH`` / the config file path).
     storage_options:
