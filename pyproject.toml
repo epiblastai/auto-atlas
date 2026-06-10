@@ -16,7 +16,7 @@ dependencies = [
     "boto3",
     "gget",
     "mygene",
-    "homeobox>=0.2.7",
+    "homeobox>=0.2.8",
     "openpyxl",
     "pubchempy",
 ]
@@ -40,9 +40,6 @@ build-backend = "setuptools.build_meta"
 line-length = 100
 target-version = "py312"
 exclude = ["notebooks/"]
-
-[tool.uv.sources]
-homeobox = { git = "https://github.com/epiblastai/homeobox.git", branch = "main" }
 
 [tool.ruff.lint]
 select = [
