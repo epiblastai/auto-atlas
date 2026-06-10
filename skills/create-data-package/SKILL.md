@@ -102,6 +102,7 @@ collection.to_json()  # write collection.json under root_dir
 
 After `coalesce()`, dataset files live in `root/<dataset_name>/`, shared files in `root/`, and `OTHER` files in `root/other_files/`. The `collection.json` manifest records every file with its tag and feature space and is the source of truth for the steps that follow.
 
+Before finalizing, ask the user whether any files are missing — especially `LIBRARY` tables (guide/reagent/donor libraries). These are usually user-provided and easy to forget, and a perturbation dataset that references a library without including it is a strong signal one is missing. If anything in the data suggests a file that isn't present, ask the user whether they have it rather than proceeding without it; just asking costs nothing.
 
 ## Scripts
 

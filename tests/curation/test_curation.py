@@ -17,14 +17,15 @@ from auto_atlas.curation import (
     CurationAuditStore,
     CurationTransaction,
     DropColumn,
+    MergeColumns,
     RenameColumn,
     ReplaceValue,
     SetColumn,
     TransactionStatus,
     default_audit_db_path,
 )
+from auto_atlas.curation.sql import arrow_type_from_alias, build_where_clause
 from auto_atlas.tool_registry import RESOLVER_TOOLS, ResolverTool
-from auto_atlas.curation.sql import build_where_clause
 from auto_atlas.types import GeneResolution, ResolutionReport
 
 
@@ -304,10 +305,12 @@ def test_dry_run_does_not_mutate_lance(atlas_dirs):
     assert symbols.count("BRCA2") == 2
     assert symbols.count("TP53") == 1
 
+    # A dry run must not pollute the audit DB: only operations that actually
+    # mutate Lance are recorded, so nothing is persisted here.
     store = CurationAuditStore(audit_path)
     try:
-        record = store.get_transaction(result.transaction_id)
-        assert record["transaction"]["status"] == "pending"
+        assert store.get_transaction(result.transaction_id) is None
+        assert store.list_transactions(table_name="gene_expression") == []
     finally:
         store.close()
 
@@ -460,6 +463,94 @@ def test_add_column_constant(atlas_dirs):
         assert change["source"] == "GSE123456"
     finally:
         store.close()
+
+
+def test_arrow_type_from_alias_supports_list():
+    assert arrow_type_from_alias("list<string>") == pa.list_(pa.string())
+    assert arrow_type_from_alias("list<item: string>") == pa.list_(pa.string())
+
+
+def test_add_column_constant_list(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            AddColumn(
+                column="perturbation_types",
+                value=["genetic_perturbation"],
+                tool="schema_align",
+                reason="single perturbation type for all cells",
+            )
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn, allowed_columns={"perturbation_types"})
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    table = lancedb.connect(db_uri).open_table("gene_expression").to_arrow()
+    assert table.schema.field("perturbation_types").type == pa.list_(pa.string())
+    assert table.to_pydict()["perturbation_types"] == [
+        ["genetic_perturbation"],
+        ["genetic_perturbation"],
+        ["genetic_perturbation"],
+    ]
+
+    store = CurationAuditStore(audit_path)
+    try:
+        change = store.get_transaction(result.transaction_id)["changes"][0]
+        assert change["new_value"] == ["genetic_perturbation"]
+    finally:
+        store.close()
+
+
+def test_add_column_null_list_and_merge_fill(atlas_dirs):
+    db_uri, audit_path = atlas_dirs
+    _make_gene_table(db_uri)
+
+    txn = CurationTransaction(
+        table_name="gene_expression",
+        changes=[
+            AddColumn(
+                column="perturbation_types",
+                data_type="list<string>",
+                tool="schema_align",
+            ),
+            MergeColumns(
+                column="perturbation_types",
+                key_column="uid",
+                rows=[
+                    {"uid": "aaa", "perturbation_types": ["genetic_perturbation"]},
+                    {"uid": "bbb", "perturbation_types": ["small_molecule"]},
+                ],
+                tool="schema_align",
+            ),
+        ],
+    )
+
+    applicator = CurationApplicator(db_uri, audit_db_path=audit_path)
+    try:
+        result = applicator.apply(txn, allowed_columns={"perturbation_types"})
+    finally:
+        applicator.close()
+
+    assert result.status == TransactionStatus.APPLIED
+    table = lancedb.connect(db_uri).open_table("gene_expression").to_arrow()
+    assert table.schema.field("perturbation_types").type == pa.list_(pa.string())
+    rows = {
+        row["uid"]: row["perturbation_types"]
+        for row in table.select(["uid", "perturbation_types"]).to_pylist()
+    }
+    assert rows == {
+        "aaa": ["genetic_perturbation"],
+        "bbb": ["small_molecule"],
+        "ccc": None,
+    }
 
 
 def test_add_column_rejects_existing(atlas_dirs):

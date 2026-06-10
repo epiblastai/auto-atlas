@@ -16,6 +16,7 @@ from auto_atlas.curation.sql import (
     arrow_type_from_alias,
     build_add_column_expr,
     build_where_clause,
+    infer_arrow_type,
 )
 from auto_atlas.curation.types import (
     AddColumn,
@@ -48,11 +49,12 @@ class CurationApplicator:
         lance_db_path: str | os.PathLike[str],
         audit_db_path: str | os.PathLike[str] | None = None,
     ) -> None:
+        self.lance_db_path = os.fspath(lance_db_path)
         self.audit_db_path = (
             os.fspath(audit_db_path) if audit_db_path else default_audit_db_path(lance_db_path)
         )
         self._audit = CurationAuditStore(self.audit_db_path)
-        self._db = lancedb.connect(os.fspath(lance_db_path))
+        self._db = lancedb.connect(self.lance_db_path)
 
     def close(self) -> None:
         self._audit.close()
@@ -74,28 +76,21 @@ class CurationApplicator:
 
         lance_version_before = table.version
         transaction.status = TransactionStatus.PENDING
-        if dry_run:
-            transaction.metadata = {**transaction.metadata, "dry_run": True}
-
-        change_ids = self._audit.insert_pending_transaction(
-            transaction,
-            lance_version_before=lance_version_before,
-        )
 
         if dry_run:
+            # A dry run validates only — it must not touch Lance or the audit DB.
+            # Validation has already run above, so any error surfaced; here we
+            # just report the ops that *would* apply. No audit rows are written,
+            # so there is no change_id to link to (sentinel -1).
             applied = [
                 AppliedChange(
                     operation=op,
-                    change_id=cid,
+                    change_id=-1,
                     rows_updated=None,
                     lance_version=None,
                 )
-                for cid, op in zip(change_ids, transaction.changes, strict=True)
+                for op in transaction.changes
             ]
-            self._audit.finalize_transaction(
-                transaction.transaction_id,
-                status=TransactionStatus.PENDING,
-            )
             return ApplyResult(
                 transaction_id=transaction.transaction_id,
                 status=TransactionStatus.PENDING,
@@ -103,6 +98,11 @@ class CurationApplicator:
                 applied_changes=applied,
                 dry_run=True,
             )
+
+        change_ids = self._audit.insert_pending_transaction(
+            transaction,
+            lance_version_before=lance_version_before,
+        )
 
         applied_changes: list[AppliedChange] = []
         error: str | None = None
@@ -115,7 +115,8 @@ class CurationApplicator:
                     # A reshape rewrites the table; the old handle is stale.
                     table = self._db.open_table(table_name)
                 if change.kind not in (OpKind.REPLACE_VALUE, OpKind.SET_COLUMN):
-                    # Schema-altering ops change the columns/types; refresh.
+                    # Schema-altering ops change columns/types; refresh.
+                    table = self._db.open_table(table_name)
                     field_types = self._field_types(table)
                 self._audit.record_applied_change(
                     change_id,
@@ -360,10 +361,20 @@ class CurationApplicator:
             if change.value_sql is not None:
                 result = table.add_columns({change.column: change.value_sql})
             elif change.value is not None:
+                field_type = (
+                    arrow_type_from_alias(change.data_type)
+                    if change.data_type
+                    else infer_arrow_type(change.value)
+                )
+                if pa.types.is_nested(field_type):
+                    field = pa.field(change.column, field_type)
+                    return self._append_column_rewrite(table_name, table, field, change.value)
                 expr = build_add_column_expr(change.value, change.data_type)
                 result = table.add_columns({change.column: expr})
             elif change.data_type is not None:
                 field = pa.field(change.column, arrow_type_from_alias(change.data_type))
+                if pa.types.is_nested(field.type):
+                    return self._append_column_rewrite(table_name, table, field, None)
                 result = table.add_columns(field)
             else:
                 raise ValueError(
@@ -473,6 +484,21 @@ class CurationApplicator:
         """
         new_table = self._db.create_table(table_name, data=new_df, mode="overwrite")
         return len(new_df), getattr(new_table, "version", None)
+
+    def _append_column_rewrite(
+        self, table_name: str, table: Any, field: pa.Field, value: Any
+    ) -> tuple[None, int | None]:
+        """Append nested columns via Arrow, bypassing Lance's nested add_columns path."""
+        arrow = table.to_arrow()
+        values = pa.array([value] * arrow.num_rows, type=field.type)
+        db = lancedb.connect(self.lance_db_path)
+        new_table = db.create_table(
+            table_name,
+            data=arrow.append_column(field, values),
+            mode="overwrite",
+        )
+        self._db = db
+        return None, getattr(new_table, "version", None)
 
     @staticmethod
     def _version_after(result: Any, table: Any) -> int | None:

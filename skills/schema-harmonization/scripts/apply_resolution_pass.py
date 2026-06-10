@@ -26,7 +26,7 @@ field to its column with repeated ``--map FIELD:COLUMN``:
         --map target_strand:target_strand --map intended_gene_name:intended_gene_name \\
         --reason "resolve guide targets via BLAT" --organism human
 
-    python ... --dry-run   # audit only, no Lance writes
+    python ... --dry-run   # validate and report only; no Lance or audit writes
 
 Tools: ``--list-tools``. Optional kwargs: ``--organism``, ``--input-type``.
 Built-in tools are listed in ``auto_atlas.tool_registry``.

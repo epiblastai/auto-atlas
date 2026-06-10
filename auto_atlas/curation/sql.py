@@ -38,7 +38,20 @@ def build_where_clause(column: str, old_value: Any, field_type: pa.DataType) -> 
 
 def arrow_type_from_alias(alias: str) -> pa.DataType:
     """Resolve a serialized Arrow type alias (e.g. "int64", "string") to a type."""
-    return pa.type_for_alias(alias)
+    normalized = alias.strip()
+    try:
+        return pa.type_for_alias(normalized)
+    except ValueError:
+        pass
+
+    for prefix, factory in (("list<", pa.list_), ("large_list<", pa.large_list)):
+        if normalized.startswith(prefix) and normalized.endswith(">"):
+            inner = normalized[len(prefix) : -1].strip()
+            if inner.startswith("item:"):
+                inner = inner[len("item:") :].strip()
+            return factory(arrow_type_from_alias(inner))
+
+    raise ValueError(f"No type alias for {alias}")
 
 
 def infer_arrow_type(value: Any) -> pa.DataType:
@@ -50,6 +63,9 @@ def infer_arrow_type(value: Any) -> pa.DataType:
         return pa.int64()
     if isinstance(value, float):
         return pa.float64()
+    if isinstance(value, list):
+        inner = next((item for item in value if item is not None), None)
+        return pa.list_(infer_arrow_type(inner) if inner is not None else pa.string())
     return pa.string()
 
 

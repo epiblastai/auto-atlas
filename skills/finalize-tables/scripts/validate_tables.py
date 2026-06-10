@@ -21,10 +21,14 @@ import argparse
 import os
 import sys
 
+from homeobox.schema import _iter_pointer_annotations
+
+from auto_atlas.finalize_columns import deferred_field_names
 from auto_atlas.types import SchemaInfo, TableRef
 from auto_atlas.util import discover_tables, load_schema_info, read_arrow
 
 _SAMPLE = 10
+_DEFERRED_POINTER_MSG = "requires at least one populated zarr pointer field"
 
 
 def validate_table(ref: TableRef, info: SchemaInfo, *, limit: int | None = None) -> list[str]:
@@ -42,11 +46,13 @@ def validate_table(ref: TableRef, info: SchemaInfo, *, limit: int | None = None)
     if extra:
         problems.append(f"{ref.table_name}: leftover columns not in schema: {extra}")
 
-    missing = sorted(
-        name for name, fi in model_fields.items() if fi.is_required() and name not in columns
-    )
+    skip = deferred_field_names(cls, info, ref.class_name)
+    missing = sorted(name for name in model_fields if name not in columns and name not in skip)
     if missing:
         problems.append(f"{ref.table_name}: required fields absent: {missing}")
+
+    pointer_fields = {name for name, _ in _iter_pointer_annotations(cls)}
+    pointers_deferred = bool(pointer_fields) and not (columns & pointer_fields)
 
     rows = table.to_pylist()
     n_total = len(rows)
@@ -56,9 +62,17 @@ def validate_table(ref: TableRef, info: SchemaInfo, *, limit: int | None = None)
     row_errors: list[str] = []
     for i, row in enumerate(rows):
         data = {k: v for k, v in row.items() if k in model_fields}
+        if pointers_deferred:
+            # Pointer columns are filled at ingestion; satisfy HoxBaseSchema's
+            # instance validator with an empty placeholder of the first pointer type.
+            for name, pointer_type in _iter_pointer_annotations(cls):
+                data.setdefault(name, pointer_type())
+                break
         try:
             cls(**data)
         except Exception as exc:  # noqa: BLE001 — surface any validation failure
+            if pointers_deferred and _DEFERRED_POINTER_MSG in str(exc):
+                continue
             row_errors.append(f"row {i}: {exc}")
             if len(row_errors) >= _SAMPLE:
                 break
