@@ -18,7 +18,7 @@ Stage the **`DatasetSchema` scaffold** here (see step 3): the identity rows and 
 ## Expected input
 
 - A coalesced collection with `collection.json` at the root
-- A schema file path from the user (ask if missing)
+- A schema file path from the user (ask if missing). Never assume the schema file, this is important to avoid wasted work. The schema file path must be explicitly provided by the user somewhere in your conversation before proceeding.
 
 ## Workflow
 
