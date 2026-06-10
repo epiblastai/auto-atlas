@@ -305,10 +305,12 @@ def test_dry_run_does_not_mutate_lance(atlas_dirs):
     assert symbols.count("BRCA2") == 2
     assert symbols.count("TP53") == 1
 
+    # A dry run must not pollute the audit DB: only operations that actually
+    # mutate Lance are recorded, so nothing is persisted here.
     store = CurationAuditStore(audit_path)
     try:
-        record = store.get_transaction(result.transaction_id)
-        assert record["transaction"]["status"] == "pending"
+        assert store.get_transaction(result.transaction_id) is None
+        assert store.list_transactions(table_name="gene_expression") == []
     finally:
         store.close()
 

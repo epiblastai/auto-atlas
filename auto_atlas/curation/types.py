@@ -266,7 +266,8 @@ class CurationTransaction:
 class AppliedChange:
     """Result of applying a single :class:`CurationOp`."""
 
-    # Intent and link to the curation_changes audit row
+    # Intent and link to the curation_changes audit row. ``-1`` on a dry run,
+    # which writes no audit rows and so has no row to link to.
     operation: CurationOp
     change_id: int
 
@@ -293,7 +294,9 @@ class ApplyResult:
     # One entry per successful operation (shorter than changes if apply failed)
     applied_changes: list[AppliedChange] = field(default_factory=list)
 
-    # True when audit rows were written but Lance was not updated
+    # True when the transaction was validated and reported only: neither Lance
+    # nor the audit DB was written. ``applied_changes`` carries sentinel
+    # change_ids of -1.
     dry_run: bool = False
     # Set when apply stops on the first exception (see status PARTIAL/FAILED)
     error: str | None = None

@@ -43,7 +43,7 @@ Every op requires `column` and `tool`. Also set provenance when you have it: `re
 **Script vs custom code** — Use `scripts/apply_resolution_pass.py` when a single column's distinct values can be resolved and written back in place (default mode), or when one multi-field resolver should fan out to several columns at once (`--fanout`, see below). Use custom Python (still through `CurationApplicator`) for everything else: renaming raw columns, building staging columns with `value_sql`, copying across columns with `CASE`/`COALESCE`, or reshaping rows.
 
 1. **Plan** — decide the table name and ordered `CurationOp` list (and whether a resolution pass runs before or after structural ops).
-2. **Dry run** — `applicator.apply(txn, dry_run=True)` (or `--dry-run` on the script) records the transaction in the audit DB but does **not** mutate Lance. Use it to validate ops and provenance, especially for large or mixed transactions.
+2. **Dry run** — `applicator.apply(txn, dry_run=True)` (or `--dry-run` on the script) validates the ops and reports what *would* apply, mutating neither Lance nor the audit DB. Use it to check ops and provenance, especially for large or mixed transactions.
 3. **Apply** — open an applicator, apply with `allowed_columns` guardrails, check the result, close.
 
 Resolution-pass script (one resolver, one column; `--list-tools` for names like `resolve_genes`, `resolve_cell_types`):

@@ -76,28 +76,21 @@ class CurationApplicator:
 
         lance_version_before = table.version
         transaction.status = TransactionStatus.PENDING
-        if dry_run:
-            transaction.metadata = {**transaction.metadata, "dry_run": True}
-
-        change_ids = self._audit.insert_pending_transaction(
-            transaction,
-            lance_version_before=lance_version_before,
-        )
 
         if dry_run:
+            # A dry run validates only — it must not touch Lance or the audit DB.
+            # Validation has already run above, so any error surfaced; here we
+            # just report the ops that *would* apply. No audit rows are written,
+            # so there is no change_id to link to (sentinel -1).
             applied = [
                 AppliedChange(
                     operation=op,
-                    change_id=cid,
+                    change_id=-1,
                     rows_updated=None,
                     lance_version=None,
                 )
-                for cid, op in zip(change_ids, transaction.changes, strict=True)
+                for op in transaction.changes
             ]
-            self._audit.finalize_transaction(
-                transaction.transaction_id,
-                status=TransactionStatus.PENDING,
-            )
             return ApplyResult(
                 transaction_id=transaction.transaction_id,
                 status=TransactionStatus.PENDING,
@@ -105,6 +98,11 @@ class CurationApplicator:
                 applied_changes=applied,
                 dry_run=True,
             )
+
+        change_ids = self._audit.insert_pending_transaction(
+            transaction,
+            lance_version_before=lance_version_before,
+        )
 
         applied_changes: list[AppliedChange] = []
         error: str | None = None
