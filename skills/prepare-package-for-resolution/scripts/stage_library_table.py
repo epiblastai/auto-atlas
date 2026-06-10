@@ -72,8 +72,7 @@ def load_library_table(path: str, sheet_name: str | None = None) -> pd.DataFrame
     if lower.endswith(".xlsx"):
         return pd.read_excel(path, sheet_name=sheet_name or 0)
     raise ValueError(
-        f"Unsupported library format: {path}. "
-        f"Expected one of {', '.join(SUPPORTED_SUFFIXES)}."
+        f"Unsupported library format: {path}. Expected one of {', '.join(SUPPORTED_SUFFIXES)}."
     )
 
 
@@ -90,9 +89,7 @@ def warn_if_not_tagged_library(collection_root: str, library_path: str) -> None:
         tagged = os.path.abspath(resolve_path(collection_root, entry["path"]))
         if tagged == abs_library:
             return
-    print(
-        f"warning: {library_path} is not listed as a LIBRARY file in {COLLECTION_MANIFEST}"
-    )
+    print(f"warning: {library_path} is not listed as a LIBRARY file in {COLLECTION_MANIFEST}")
 
 
 def main(argv: list[str] | None = None) -> None:

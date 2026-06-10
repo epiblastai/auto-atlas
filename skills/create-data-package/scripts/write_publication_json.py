@@ -14,9 +14,7 @@ import os
 from auto_atlas import fetch_publication_metadata, search_pubmed_by_title
 
 
-def write_publication_json(
-    data_dir: str, pmid: str | None = None, title: str | None = None
-) -> str:
+def write_publication_json(data_dir: str, pmid: str | None = None, title: str | None = None) -> str:
     os.makedirs(data_dir, exist_ok=True)
 
     if pmid:

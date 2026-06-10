@@ -27,9 +27,9 @@ from pathlib import Path
 
 import lancedb
 import pandas as pd
+from homeobox.parser import parse_schema_file, parse_schema_module
 
 from auto_atlas.collection import Collection, FileTypeTag
-from homeobox.parser import parse_schema_file, parse_schema_module
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"
@@ -149,8 +149,7 @@ def load_indexed_table(path: str, index_name: str) -> pd.DataFrame:
         return read_delimited_table(path).reset_index(names=index_name)
 
     raise ValueError(
-        f"Unsupported OBS/VAR format: {path}. "
-        "Expected .csv, .tsv, .tsv.gz, or .parquet."
+        f"Unsupported OBS/VAR format: {path}. Expected .csv, .tsv, .tsv.gz, or .parquet."
     )
 
 
