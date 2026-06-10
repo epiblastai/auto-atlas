@@ -33,8 +33,7 @@ import pyarrow as pa
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.group_specs import get_spec
 from homeobox.ingestion import Ingestor, Reader
-from homeobox.parser import parse_schema_module
-from homeobox.schema import PointerField
+from homeobox.schema import PointerField, _extract_pointer_fields
 
 from auto_atlas.collection import Collection, FileTypeTag
 from auto_atlas.types import SchemaInfo
@@ -58,7 +57,6 @@ class ReaderContext:
     dataset_name: str
     feature_space: str
     data_files: list[str]
-    var_files: list[str]
     # The per-dataset feature registry / var table in local matrix-column order.
     var_table: pa.Table | None
     registry_schema: type | None
@@ -141,34 +139,21 @@ class _SchemaModel:
 
 def _resolve_schema(schema_path: str) -> _SchemaModel:
     info = load_schema_info(schema_path)
-    parsed = parse_schema_module(info.module)
 
-    obs = parsed.get("obs")
-    dataset = parsed.get("dataset")
-    if obs is None or dataset is None:
+    obs_classes = [name for name, kind in info.kinds.items() if kind == "obs"]
+    dataset_classes = [name for name, kind in info.kinds.items() if kind == "dataset"]
+    if len(obs_classes) != 1 or len(dataset_classes) != 1:
         raise ValueError("schema must declare exactly one obs table and one dataset table")
 
-    pointers: list[PointerField] = []
-    for fobj in obs.get("fields", []):
-        pmeta = fobj.get("pointer")
-        if not pmeta:
-            continue
-        pointers.append(
-            PointerField(
-                field_name=fobj["name"],
-                feature_space=pmeta["feature_space"],
-                feature_registry_schema=pmeta.get("feature_registry_schema"),
-            )
-        )
-
+    pointers = list(_extract_pointer_fields(info.live_class(obs_classes[0])).values())
     registry_key_classes = [
         name for name, kind in info.kinds.items() if kind in {"entity", "table"}
     ]
 
     return _SchemaModel(
         info=info,
-        obs_class=obs["class_name"],
-        dataset_class=dataset["class_name"],
+        obs_class=obs_classes[0],
+        dataset_class=dataset_classes[0],
         pointers=pointers,
         registry_key_classes=registry_key_classes,
     )
@@ -316,8 +301,8 @@ class CollectionIngestor:
         report = IngestReport()
         self._atlas = self._open_atlas()
 
-        self._copy_registry_tables(report)
-        report.features_registered.update(self._register_feature_registries())
+        report.registry_tables_copied = self._copy_registry_tables()
+        report.features_registered = self._register_feature_registries()
 
         existing = self._existing_dataset_uids()
         for name in self.collection.datasets:
@@ -327,7 +312,10 @@ class CollectionIngestor:
                 report.datasets_skipped.append(name)
                 continue
             print(f"== ingesting {name} ==")
-            self._ingest_dataset(name, dataset, report)
+            for fs, n_rows in self._ingest_dataset(name, dataset).items():
+                report.rows_per_feature_space[fs] = (
+                    report.rows_per_feature_space.get(fs, 0) + n_rows
+                )
             report.datasets_ingested.append(name)
 
         print(report)
@@ -358,11 +346,12 @@ class CollectionIngestor:
             return set()
         return set(df[DATASET_UID_COLUMN].to_list())
 
-    def _copy_registry_tables(self, report: IngestReport) -> None:
+    def _copy_registry_tables(self) -> dict[str, int]:
         """Copy collection-level registry-key tables into the atlas (dedup on uid)."""
+        copied: dict[str, int] = {}
         coll_db_path = os.path.join(self.root_dir, LANCE_DB_DIR)
         if not os.path.isdir(coll_db_path):
-            return
+            return copied
         src = lancedb.connect(coll_db_path)
         names = set(src.list_tables().tables)
         dst = self._atlas_db()
@@ -373,7 +362,7 @@ class CollectionIngestor:
                 continue
             arrow = src.open_table(cls).to_arrow()
             print(f"  registry-key table {cls}: {arrow.num_rows} row(s)")
-            report.registry_tables_copied[cls] = arrow.num_rows
+            copied[cls] = arrow.num_rows
             if self.dry_run:
                 continue
             if cls not in dst_names:
@@ -385,6 +374,7 @@ class CollectionIngestor:
                     .when_not_matched_insert_all()
                     .execute(arrow)
                 )
+        return copied
 
     def _register_feature_registries(self) -> dict[str, int]:
         """Populate feature registries before homeobox validates per-dataset var tables."""
@@ -411,17 +401,18 @@ class CollectionIngestor:
 
     # -- per-dataset ingestion ---------------------------------------------
 
-    def _ingest_dataset(self, name: str, dataset: Any, report: IngestReport) -> None:
+    def _ingest_dataset(self, name: str, dataset: Any) -> dict[str, int]:
         bare = self._open_dataset_table(name, self.obs_table_name)
         if bare is None:
             raise ValueError(f"{name}: no finalized obs table {self.obs_table_name!r}")
         bare_obs = bare.to_arrow()
 
         plans: list[_FeatureIngestPlan] = []
+        rows_per_feature_space: dict[str, int] = {}
         for feature_space in dataset.feature_spaces:
             ctx = self._build_context(name, dataset, feature_space)
             source = self._resolve_source(ctx)
-            dataset_record = self._build_dataset_record(name, dataset, ctx)
+            dataset_record = self._build_dataset_record(name, dataset, ctx, bare_obs)
             field_name = self.schema.pointer_for(feature_space).field_name
             obs_indices = self._obs_indices_for_source(
                 name, feature_space, source.row_ids, bare_obs
@@ -436,12 +427,12 @@ class CollectionIngestor:
                     obs_indices=obs_indices,
                 )
             )
-            report.rows_per_feature_space[feature_space] = (
-                report.rows_per_feature_space.get(feature_space, 0) + source.n_rows
+            rows_per_feature_space[feature_space] = (
+                rows_per_feature_space.get(feature_space, 0) + source.n_rows
             )
 
         if self.dry_run:
-            return
+            return rows_per_feature_space
 
         obs_df = self._prepare_obs_df(bare_obs, plans)
         ingestor = Ingestor(self._atlas, obs_df=obs_df, obs_table_name=self.obs_table_name)
@@ -458,6 +449,7 @@ class CollectionIngestor:
             )
         n_rows = ingestor.write_obs_records()
         print(f"  added {n_rows} obs row(s)")
+        return rows_per_feature_space
 
     def _build_context(self, name: str, dataset: Any, feature_space: str) -> ReaderContext:
         pointer = self.schema.pointer_for(feature_space)
@@ -468,7 +460,6 @@ class CollectionIngestor:
         )
 
         data_files = dataset.files_for(tag=FileTypeTag.DATA, feature_space=feature_space)
-        var_files = dataset.files_for(tag=FileTypeTag.VAR, feature_space=feature_space)
         var_tbl = (
             self._open_dataset_table(name, registry_cls.__name__)
             if registry_cls is not None
@@ -480,7 +471,6 @@ class CollectionIngestor:
             dataset_name=name,
             feature_space=feature_space,
             data_files=data_files,
-            var_files=var_files,
             var_table=var_table,
             registry_schema=registry_cls,
         )
@@ -501,7 +491,7 @@ class CollectionIngestor:
         self._raise_duplicate_values(name, self.obs_table_name, UID_COLUMN, bare_uids)
         bare_uid_to_pos = {uid: i for i, uid in enumerate(bare_uids)}
 
-        modality_obs = self._modality_obs_arrow(name, feature_space)
+        modality_obs = self._modality_obs_arrow(name, feature_space, bare_obs)
         for col in (OBS_INDEX_COLUMN, UID_COLUMN):
             if col not in modality_obs.column_names:
                 raise ValueError(
@@ -531,7 +521,6 @@ class CollectionIngestor:
                 f"present in the bare obs table; examples: {unknown_uids[:5]}"
             )
 
-        row_ids = [str(row_id) for row_id in row_ids]
         self._raise_duplicate_values(name, feature_space, "DATA row id", row_ids)
         missing_from_data = [
             obs_index for obs_index in obs_index_values if obs_index not in row_ids
@@ -552,15 +541,10 @@ class CollectionIngestor:
 
         return np.array([obs_index_to_position[row_id] for row_id in row_ids], dtype=np.int64)
 
-    def _modality_obs_arrow(self, name: str, feature_space: str) -> pa.Table:
+    def _modality_obs_arrow(self, name: str, feature_space: str, bare_obs: pa.Table) -> pa.Table:
         suffixed_name = f"{self.obs_table_name}_{feature_space}"
         suffixed = self._open_dataset_table(name, suffixed_name)
-        if suffixed is not None:
-            return suffixed.to_arrow()
-        bare = self._open_dataset_table(name, self.obs_table_name)
-        if bare is None:
-            raise ValueError(f"{name}: no finalized obs table {self.obs_table_name!r}")
-        return bare.to_arrow()
+        return suffixed.to_arrow() if suffixed is not None else bare_obs
 
     @staticmethod
     def _raise_duplicate_values(
@@ -600,7 +584,9 @@ class CollectionIngestor:
 
         return obs_df
 
-    def _build_dataset_record(self, name: str, dataset: Any, ctx: ReaderContext) -> Any:
+    def _build_dataset_record(
+        self, name: str, dataset: Any, ctx: ReaderContext, bare_obs: pa.Table
+    ) -> Any:
         """Reuse the finalized DatasetSchema row for this fs, filling SummaryFields from obs."""
         dataset_cls = self.schema.dataset_cls
         tbl = self._open_dataset_table(name, self.schema.dataset_class)
@@ -613,16 +599,14 @@ class CollectionIngestor:
                 f"{name}: dataset table has no row for feature_space={ctx.feature_space!r}"
             )
         record_data = rows.iloc[0].to_dict()
-        record_data = self._fill_summary_fields(name, record_data)
+        record_data = self._fill_summary_fields(record_data, bare_obs)
         return dataset_cls(**record_data)
 
-    def _fill_summary_fields(self, name: str, record_data: dict) -> dict:
+    def _fill_summary_fields(self, record_data: dict, obs: pa.Table) -> dict:
         """Fill DatasetSchema SummaryFields (unique/count) from the bare obs table."""
         summaries = self.schema.info.summary_fields.get(self.schema.dataset_class, [])
         if not summaries:
             return record_data
-        bare = self._open_dataset_table(name, self.obs_table_name)
-        obs = bare.to_arrow()
         for s in summaries:
             if s.target_field not in obs.column_names:
                 continue
