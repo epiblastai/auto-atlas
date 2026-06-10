@@ -20,7 +20,7 @@ Finalization is the step that turns a set of independently-harmonized tables int
 
 For every table: all automatic columns assigned, all registry keys populated, transient join/leftover columns removed, and the table validated against its schema class. The collection will be internally linked and ready for ingestion.
 
-Finalization does **not** materialize every schema field. Columns that carry schema defaults are not added just because the schema declares them — a missing column stays missing in Lance. Expect finalized tables to omit any field filled at **ingestion** time, including `PointerField` modality pointers and `SummaryField` aggregates (e.g. `n_rows`, dataset-level rollups of obs metadata). Validation checks that present values conform to the schema; it does not require those deferred columns to exist yet.
+Finalization materializes **every** schema field as a column except those deferred to ingestion. A field whose value is unknown is fine to leave empty — a nullable field is null-initialized rather than dropped, because the schema default does not excuse the column from existing: downstream writers expect it. The only fields allowed to be absent are those filled at **ingestion** time: `PointerField` modality pointers (and their `has_<pointer>` flags), `SummaryField` aggregates (e.g. `n_rows`, dataset-level rollups of obs metadata), and `global_index`. Validation checks that present values conform to the schema; it does not require those deferred columns to exist yet.
 
 ## Responsibilities (per table, in order)
 
