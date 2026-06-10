@@ -1,20 +1,25 @@
-"""Ingest a finalized :class:`~auto_atlas.collection.Collection` into homeobox.
+"""Add a finalized :class:`~auto_atlas.collection.Collection` to a homeobox atlas.
 
-This is the final write step after auto-atlas has coalesced and finalized a
-collection. At this point the package already owns the collection-level registry
-tables, per-dataset obs tables, feature registries, and dataset rows. This
-module's job is to translate that package state into homeobox ingestion calls:
+This is the final write step, after the collection has been harmonized and
+``skills/finalize-tables`` has run. By then the on-disk state is fixed:
 
-- copy collection-level registry-key tables into the atlas;
-- register feature registries;
-- delegate each DATA file family to a registered resolver that prepares a
-  streaming homeobox ``Reader``;
-- map DATA row identities onto finalized obs row positions; and
-- let :class:`homeobox.ingestion.Ingestor` write arrays and stamp pointers.
+- ``<root>/lance_db/`` holds the collection-level registry-key target tables;
+- ``<root>/<dataset>/lance_db/`` holds the finalized obs table, one per-feature
+  -space obs artifact (``<ObsClass>_<feature_space>``, carrying ``uid`` in DATA
+  row order), the per-dataset feature registries, and the dataset table;
+- the raw matrix files live beside them, tagged ``DATA`` in ``collection.json``.
 
-Auto-atlas remains responsible for collection and data-package semantics. The
-zarr write path, pointer construction, dataset registration, and final obs insert
-are delegated to homeobox.
+Everything here is schema-driven boilerplate *except one thing*: turning a
+dataset's raw DATA files into a homeobox :class:`~homeobox.ingestion.Reader`.
+That varies per source format (h5ad, COO, dense arrays, fragments, ...), so it
+is the single pluggable hook — a ``Loader`` callable keyed by feature space (see
+:data:`Loader`). Converter and writer selection is homeobox's job, resolved from
+the feature-space spec; callers never pick them.
+
+:func:`ingest_collection` drives the whole thing: open the atlas, copy registry
+tables, register features, then per dataset assemble obs, align DATA rows to obs
+positions, and let :class:`homeobox.ingestion.Ingestor` write the arrays and
+stamp the pointers.
 
 No ``pathlib``: paths are plain strings joined with ``os.path`` so s3 urls keep
 working.
@@ -23,12 +28,14 @@ working.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import NamedTuple
 
 import lancedb
 import numpy as np
 import pandas as pd
+import polars as pl
 import pyarrow as pa
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.group_specs import get_spec
@@ -40,60 +47,47 @@ from auto_atlas.types import SchemaInfo
 from auto_atlas.util import load_schema_info
 
 LANCE_DB_DIR = "lance_db"
-OBS_INDEX_COLUMN = "obs_index"
 UID_COLUMN = "uid"
 DATASET_UID_COLUMN = "dataset_uid"
 
 
 # ===========================================================================
-# Source abstraction
+# The pluggable hook: a Loader produces a homeobox Reader from DATA files
 # ===========================================================================
 
 
 @dataclass(frozen=True)
-class ReaderContext:
-    """Everything needed to prepare one feature space of one dataset."""
+class LoaderContext:
+    """What a loader is handed to read one feature space of one dataset."""
 
     dataset_name: str
     feature_space: str
+    # DATA files tagged for this feature space, from the collection manifest.
     data_files: list[str]
-    # The per-dataset feature registry / var table in local matrix-column order.
+    # The per-dataset feature registry / var table, in finalized feature order,
+    # or ``None`` for feature spaces with no registry (``has_var_df=False``).
     var_table: pa.Table | None
-    registry_schema: type | None
 
 
-@dataclass
-class PreparedSource:
-    """A streaming matrix source plus the metadata homeobox needs to ingest it.
+class LoaderResult(NamedTuple):
+    """A homeobox source plus the per-write metadata it needs.
 
-    ``row_ids`` are DATA-native row identities in the same order emitted by
-    ``reader``. Auto-atlas maps them to integer obs positions and passes those
-    positions to ``Ingestor.write_array(obs_indices=...)``.
+    The reader emits row-batches in DATA-file row order; auto-atlas maps that
+    order onto finalized obs positions (see :func:`_obs_indices`). The array
+    *type* the reader yields selects the converter, so the loader never names
+    one.
     """
 
     reader: Reader
-    row_ids: list[str]
-    n_rows: int
+    # {source layer name the reader reads -> destination zarr layer}.
+    layer_mapping: dict[str, str]
     n_vars: int
+    # Required iff ``get_spec(feature_space).has_var_df``; must carry ``uid``.
     var_df: pd.DataFrame | None = None
-    layer_mapping: dict[str, str] = field(default_factory=dict)
 
 
-class DataSourceResolver(Protocol):
-    """Prepare raw DATA files for homeobox ingestion."""
-
-    def can_read(self, ctx: ReaderContext) -> bool: ...
-
-    def prepare(self, ctx: ReaderContext) -> PreparedSource: ...
-
-
-@dataclass
-class _FeatureIngestPlan:
-    feature_space: str
-    field_name: str
-    source: PreparedSource
-    dataset_record: Any
-    obs_indices: np.ndarray
+# A loader turns one feature space's DATA files into a homeobox source.
+Loader = Callable[[LoaderContext], LoaderResult]
 
 
 # ===========================================================================
@@ -160,7 +154,7 @@ def _resolve_schema(schema_path: str) -> _SchemaModel:
 
 
 # ===========================================================================
-# CollectionIngestor
+# Entry point
 # ===========================================================================
 
 
@@ -183,446 +177,363 @@ class IngestReport:
         return "\n".join(lines)
 
 
-class CollectionIngestor:
-    """Add a finalized collection and all its datasets to a homeobox atlas."""
+def ingest_collection(
+    collection_root: str,
+    schema_path: str,
+    atlas_path: str,
+    loaders: Mapping[str, Loader],
+    *,
+    dataset_loaders: Mapping[str, Mapping[str, Loader]] | None = None,
+    obs_table_name: str | None = None,
+    store_kwargs: dict | None = None,
+    skip_existing: bool = True,
+) -> IngestReport:
+    """Add a finalized collection and all its datasets to a homeobox atlas.
 
-    def __init__(
-        self,
-        root_dir: str,
-        schema_path: str,
-        atlas_path: str,
-        *,
-        obs_table_name: str | None = None,
-        store_kwargs: dict | None = None,
-        skip_existing: bool = True,
-        dry_run: bool = False,
-    ) -> None:
-        self.root_dir = os.fspath(root_dir)
-        self.atlas_path = os.fspath(atlas_path)
-        self.store_kwargs = store_kwargs
-        self.skip_existing = skip_existing
-        self.dry_run = dry_run
+    Parameters
+    ----------
+    collection_root:
+        Directory holding ``collection.json`` and the finalized lance tables.
+    schema_path:
+        The target homeobox schema module (one obs + one dataset class).
+    atlas_path:
+        Atlas location (local path or s3 url); created if absent.
+    loaders:
+        ``{feature_space: Loader}``. A loader turns that feature space's DATA
+        files into a homeobox :class:`~homeobox.ingestion.Reader` (see
+        :data:`Loader`).
+    dataset_loaders:
+        Optional ``{dataset_name: {feature_space: Loader}}`` overrides that win
+        over ``loaders`` for that one dataset.
+    obs_table_name:
+        Obs lance table / atlas obs table name; defaults to the obs class name.
+    skip_existing:
+        Skip datasets whose ``dataset_uid`` is already in the atlas.
+    """
+    collection_root = os.fspath(collection_root)
+    atlas_path = os.fspath(atlas_path)
 
-        self.collection = Collection.from_json(os.path.join(self.root_dir, "collection.json"))
-        self.schema = _resolve_schema(schema_path)
-        self.obs_table_name = obs_table_name or self.schema.obs_class
+    collection = Collection.from_json(os.path.join(collection_root, "collection.json"))
+    schema = _resolve_schema(schema_path)
+    obs_table_name = obs_table_name or schema.obs_class
 
-        self._global_resolvers: list[DataSourceResolver] = []
-        self._fs_resolvers: dict[str, DataSourceResolver] = {}
-        self._dataset_resolvers: dict[str, DataSourceResolver] = {}
+    atlas = create_or_open_atlas(
+        atlas_path,
+        obs_schemas={obs_table_name: schema.obs_cls},
+        dataset_table_name=schema.dataset_class,
+        dataset_schema=schema.dataset_cls,
+        registry_schemas=schema.feature_space_registry(),
+        store_kwargs=store_kwargs,
+    )
 
-        self._atlas: RaggedAtlas | None = None
+    report = IngestReport()
+    report.registry_tables_copied = _copy_registry_key_tables(collection_root, atlas_path, schema)
+    report.features_registered = _register_feature_registries(
+        collection, collection_root, atlas, schema
+    )
 
-    # -- source resolution --------------------------------------------------
-
-    def register_source_resolver(
-        self,
-        resolver: DataSourceResolver,
-        *,
-        dataset: str | None = None,
-        feature_space: str | None = None,
-    ) -> None:
-        """Register a custom DATA source resolver.
-
-        Resolvers prepare a homeobox ``Reader`` and report the DATA row ids in
-        emitted order. More specific scopes win: dataset > feature space >
-        global.
-        """
-        if dataset is not None:
-            self._dataset_resolvers[dataset] = resolver
-        elif feature_space is not None:
-            self._fs_resolvers[feature_space] = resolver
-        else:
-            self._global_resolvers.append(resolver)
-
-    def _resolve_source(self, ctx: ReaderContext) -> PreparedSource:
-        if ctx.dataset_name in self._dataset_resolvers:
-            return self._prepare_source(self._dataset_resolvers[ctx.dataset_name], ctx)
-        if ctx.feature_space in self._fs_resolvers:
-            return self._prepare_source(self._fs_resolvers[ctx.feature_space], ctx)
-        for resolver in self._global_resolvers:
-            if resolver.can_read(ctx):
-                return self._prepare_source(resolver, ctx)
-        raise ValueError(
-            f"No source resolver can handle {ctx.dataset_name}/{ctx.feature_space}; "
-            f"data files: {ctx.data_files}. Register a DataSourceResolver."
+    existing = _existing_dataset_uids(atlas)
+    for name in collection.datasets:
+        dataset = collection._datasets[name]
+        if skip_existing and dataset.uid in existing:
+            print(f"== {name}: dataset_uid {dataset.uid} already in atlas, skipping ==")
+            report.datasets_skipped.append(name)
+            continue
+        print(f"== ingesting {name} ==")
+        rows = _ingest_dataset(
+            collection_root, atlas, schema, obs_table_name, name, dataset, loaders, dataset_loaders
         )
+        for fs, n in rows.items():
+            report.rows_per_feature_space[fs] = report.rows_per_feature_space.get(fs, 0) + n
+        report.datasets_ingested.append(name)
 
-    def _prepare_source(self, resolver: DataSourceResolver, ctx: ReaderContext) -> PreparedSource:
-        if not resolver.can_read(ctx):
-            raise ValueError(
-                f"Registered source resolver cannot handle {ctx.dataset_name}/{ctx.feature_space}; "
-                f"data files: {ctx.data_files}"
-            )
-        return self._validate_source(ctx, resolver.prepare(ctx))
+    print(report)
+    return report
 
-    def _validate_source(self, ctx: ReaderContext, source: PreparedSource) -> PreparedSource:
-        spec = get_spec(ctx.feature_space)
-        if source.n_rows != len(source.row_ids):
-            raise ValueError(
-                f"{ctx.dataset_name}/{ctx.feature_space}: source reports {source.n_rows} rows, "
-                f"but row_ids has {len(source.row_ids)} entries"
-            )
-        if not source.layer_mapping:
-            raise ValueError(
-                f"{ctx.dataset_name}/{ctx.feature_space}: source must provide a layer_mapping"
-            )
 
-        var_df = source.var_df
-        if spec.has_var_df:
-            if var_df is None:
-                raise ValueError(
-                    f"{ctx.dataset_name}/{ctx.feature_space}: feature space requires a var_df"
-                )
-            if len(var_df) != source.n_vars:
-                raise ValueError(
-                    f"{ctx.dataset_name}/{ctx.feature_space}: source reports {source.n_vars} "
-                    f"variables, but var_df has {len(var_df)} rows"
-                )
-            if UID_COLUMN not in var_df.columns:
-                raise ValueError(
-                    f"{ctx.dataset_name}/{ctx.feature_space}: var_df is missing {UID_COLUMN!r}"
-                )
-        else:
-            var_df = None
+# ===========================================================================
+# Collection-level setup
+# ===========================================================================
 
-        return PreparedSource(
-            reader=source.reader,
-            row_ids=[str(row_id) for row_id in source.row_ids],
-            n_rows=source.n_rows,
-            n_vars=source.n_vars,
-            var_df=var_df,
-            layer_mapping=dict(source.layer_mapping),
-        )
 
-    # -- run ----------------------------------------------------------------
+def _existing_dataset_uids(atlas: RaggedAtlas) -> set[str]:
+    try:
+        df = atlas._dataset_table.search().select([DATASET_UID_COLUMN]).to_polars()
+    except Exception:
+        return set()
+    return set() if df.is_empty() else set(df[DATASET_UID_COLUMN].to_list())
 
-    def run(self) -> IngestReport:
-        report = IngestReport()
-        self._atlas = self._open_atlas()
 
-        report.registry_tables_copied = self._copy_registry_tables()
-        report.features_registered = self._register_feature_registries()
+def _copy_registry_key_tables(
+    collection_root: str, atlas_path: str, schema: _SchemaModel
+) -> dict[str, int]:
+    """Copy collection-level registry-key target tables into the atlas (dedup on uid).
 
-        existing = self._existing_dataset_uids()
-        for name in self.collection.datasets:
-            dataset = self.collection._datasets[name]
-            if self.skip_existing and dataset.uid in existing:
-                print(f"== {name}: dataset_uid {dataset.uid} already in atlas, skipping ==")
-                report.datasets_skipped.append(name)
-                continue
-            print(f"== ingesting {name} ==")
-            for fs, n_rows in self._ingest_dataset(name, dataset).items():
-                report.rows_per_feature_space[fs] = (
-                    report.rows_per_feature_space.get(fs, 0) + n_rows
-                )
-            report.datasets_ingested.append(name)
-
-        print(report)
-        return report
-
-    # -- atlas setup --------------------------------------------------------
-
-    def _open_atlas(self) -> RaggedAtlas:
-        registry_schemas = self.schema.feature_space_registry()
-        return create_or_open_atlas(
-            self.atlas_path,
-            obs_schemas={self.obs_table_name: self.schema.obs_cls},
-            dataset_table_name=self.schema.dataset_class,
-            dataset_schema=self.schema.dataset_cls,
-            registry_schemas=registry_schemas,
-            store_kwargs=self.store_kwargs,
-        )
-
-    def _atlas_db(self) -> lancedb.DBConnection:
-        return lancedb.connect(os.path.join(self.atlas_path, LANCE_DB_DIR))
-
-    def _existing_dataset_uids(self) -> set[str]:
-        try:
-            df = self._atlas._dataset_table.search().select([DATASET_UID_COLUMN]).to_polars()
-        except Exception:
-            return set()
-        if df.is_empty():
-            return set()
-        return set(df[DATASET_UID_COLUMN].to_list())
-
-    def _copy_registry_tables(self) -> dict[str, int]:
-        """Copy collection-level registry-key tables into the atlas (dedup on uid)."""
-        copied: dict[str, int] = {}
-        coll_db_path = os.path.join(self.root_dir, LANCE_DB_DIR)
-        if not os.path.isdir(coll_db_path):
-            return copied
-        src = lancedb.connect(coll_db_path)
-        names = set(src.list_tables().tables)
-        dst = self._atlas_db()
-        dst_names = set(dst.list_tables().tables)
-
-        for cls in self.schema.registry_key_classes:
-            if cls not in names:
-                continue
-            arrow = src.open_table(cls).to_arrow()
-            print(f"  registry-key table {cls}: {arrow.num_rows} row(s)")
-            copied[cls] = arrow.num_rows
-            if self.dry_run:
-                continue
-            if cls not in dst_names:
-                dst.create_table(cls, data=arrow)
-            else:
-                (
-                    dst.open_table(cls)
-                    .merge_insert(on=UID_COLUMN)
-                    .when_not_matched_insert_all()
-                    .execute(arrow)
-                )
+    Homeobox has no helper for cross-db table copies, so auto-atlas owns this.
+    """
+    copied: dict[str, int] = {}
+    src_path = os.path.join(collection_root, LANCE_DB_DIR)
+    if not os.path.isdir(src_path):
         return copied
+    src = lancedb.connect(src_path)
+    src_names = set(src.list_tables().tables)
+    dst = lancedb.connect(os.path.join(atlas_path, LANCE_DB_DIR))
+    dst_names = set(dst.list_tables().tables)
 
-    def _register_feature_registries(self) -> dict[str, int]:
-        """Populate feature registries before homeobox validates per-dataset var tables."""
-        registries = self.schema.feature_space_registry()
-        registered: dict[str, int] = {}
-        for feature_space, registry_cls in registries.items():
-            records = []
-            for name in self.collection.datasets:
-                tbl = self._open_dataset_table(name, registry_cls.__name__)
-                if tbl is None:
-                    continue
-                df = tbl.to_arrow().to_pandas()
-                records.extend(registry_cls(**row.to_dict()) for _, row in df.iterrows())
-            if not records:
+    for cls in schema.registry_key_classes:
+        if cls not in src_names:
+            continue
+        arrow = src.open_table(cls).to_arrow()
+        print(f"  registry-key table {cls}: {arrow.num_rows} row(s)")
+        copied[cls] = arrow.num_rows
+        if cls not in dst_names:
+            dst.create_table(cls, data=arrow)
+        else:
+            (
+                dst.open_table(cls)
+                .merge_insert(on=UID_COLUMN)
+                .when_not_matched_insert_all()
+                .execute(arrow)
+            )
+    return copied
+
+
+def _register_feature_registries(
+    collection: Collection, collection_root: str, atlas: RaggedAtlas, schema: _SchemaModel
+) -> dict[str, int]:
+    """Register each feature space's per-dataset var tables before ingestion.
+
+    ``register_features`` accepts a DataFrame and dedupes on ``uid``, so each
+    dataset's registry table is passed through whole.
+    """
+    registered: dict[str, int] = {}
+    for feature_space, registry_cls in schema.feature_space_registry().items():
+        for name in collection.datasets:
+            table = _read_table(collection_root, name, registry_cls.__name__)
+            if table is None:
                 continue
-            print(f"  register_features({feature_space}): {len(records)} record(s)")
-            if self.dry_run:
-                registered[feature_space] = 0
-                continue
-            n_new = self._atlas.register_features(feature_space, records)
-            registered[feature_space] = n_new
-            print(f"    {n_new} new")
-        return registered
+            n_new = atlas.register_features(feature_space, pl.from_arrow(table))
+            registered[feature_space] = registered.get(feature_space, 0) + n_new
+            print(f"  register_features({feature_space}) from {name}: {n_new} new")
+    return registered
 
-    # -- per-dataset ingestion ---------------------------------------------
 
-    def _ingest_dataset(self, name: str, dataset: Any) -> dict[str, int]:
-        bare = self._open_dataset_table(name, self.obs_table_name)
-        if bare is None:
-            raise ValueError(f"{name}: no finalized obs table {self.obs_table_name!r}")
-        bare_obs = bare.to_arrow()
+# ===========================================================================
+# Per-dataset ingestion
+# ===========================================================================
 
-        plans: list[_FeatureIngestPlan] = []
-        rows_per_feature_space: dict[str, int] = {}
-        for feature_space in dataset.feature_spaces:
-            ctx = self._build_context(name, dataset, feature_space)
-            source = self._resolve_source(ctx)
-            dataset_record = self._build_dataset_record(name, dataset, ctx, bare_obs)
-            field_name = self.schema.pointer_for(feature_space).field_name
-            obs_indices = self._obs_indices_for_source(
-                name, feature_space, source.row_ids, bare_obs
+
+class _Plan(NamedTuple):
+    feature_space: str
+    field_name: str
+    result: LoaderResult
+    dataset_record: object
+    obs_indices: np.ndarray | None
+
+
+def _ingest_dataset(
+    collection_root: str,
+    atlas: RaggedAtlas,
+    schema: _SchemaModel,
+    obs_table_name: str,
+    name: str,
+    dataset: object,
+    loaders: Mapping[str, Loader],
+    dataset_loaders: Mapping[str, Mapping[str, Loader]] | None,
+) -> dict[str, int]:
+    bare_obs = _read_table(collection_root, name, obs_table_name)
+    if bare_obs is None:
+        raise ValueError(f"{name}: no finalized obs table {obs_table_name!r}")
+
+    plans: list[_Plan] = []
+    for feature_space in dataset.feature_spaces:
+        loader = _resolve_loader(loaders, dataset_loaders, name, feature_space)
+        data_files = dataset.files_for(tag=FileTypeTag.DATA, feature_space=feature_space)
+        if loader is None:
+            raise ValueError(
+                f"No loader for {name}/{feature_space}; data files: {data_files}. "
+                f"Pass one in loaders={{{feature_space!r}: ...}} or dataset_loaders."
             )
 
-            plans.append(
-                _FeatureIngestPlan(
-                    feature_space=feature_space,
-                    field_name=field_name,
-                    source=source,
-                    dataset_record=dataset_record,
-                    obs_indices=obs_indices,
-                )
-            )
-            rows_per_feature_space[feature_space] = (
-                rows_per_feature_space.get(feature_space, 0) + source.n_rows
-            )
-
-        if self.dry_run:
-            return rows_per_feature_space
-
-        obs_df = self._prepare_obs_df(bare_obs, plans)
-        ingestor = Ingestor(self._atlas, obs_df=obs_df, obs_table_name=self.obs_table_name)
-        for plan in plans:
-            ingestor.write_array(
-                plan.source.reader,
-                field_name=plan.field_name,
-                layer_mapping=plan.source.layer_mapping,
-                dataset_record=plan.dataset_record,
-                n_vars=plan.source.n_vars,
-                var_df=plan.source.var_df,
-                required_pointer_type=get_spec(plan.feature_space).pointer_type,
-                obs_indices=plan.obs_indices,
-            )
-        n_rows = ingestor.write_obs_records()
-        print(f"  added {n_rows} obs row(s)")
-        return rows_per_feature_space
-
-    def _build_context(self, name: str, dataset: Any, feature_space: str) -> ReaderContext:
-        pointer = self.schema.pointer_for(feature_space)
-        registry_cls = (
-            self.schema.info.live_class(pointer.feature_registry_schema)
+        pointer = schema.pointer_for(feature_space)
+        var_table = (
+            _read_table(collection_root, name, pointer.feature_registry_schema)
             if pointer.feature_registry_schema
             else None
         )
-
-        data_files = dataset.files_for(tag=FileTypeTag.DATA, feature_space=feature_space)
-        var_tbl = (
-            self._open_dataset_table(name, registry_cls.__name__)
-            if registry_cls is not None
-            else None
+        result = loader(
+            LoaderContext(
+                dataset_name=name,
+                feature_space=feature_space,
+                data_files=data_files,
+                var_table=var_table,
+            )
         )
-        var_table = var_tbl.to_arrow() if var_tbl is not None else None
+        _validate_loader_result(name, feature_space, result)
 
-        return ReaderContext(
-            dataset_name=name,
-            feature_space=feature_space,
-            data_files=data_files,
-            var_table=var_table,
-            registry_schema=registry_cls,
-        )
-
-    def _obs_indices_for_source(
-        self,
-        name: str,
-        feature_space: str,
-        row_ids: list[str],
-        bare_obs: pa.Table,
-    ) -> np.ndarray:
-        """Map DATA row ids to integer positions in the finalized bare obs table."""
-        for col in (UID_COLUMN,):
-            if col not in bare_obs.column_names:
-                raise ValueError(f"{name}: bare obs table is missing {col!r}")
-
-        bare_uids = [str(uid) for uid in bare_obs.column(UID_COLUMN).to_pylist()]
-        self._raise_duplicate_values(name, self.obs_table_name, UID_COLUMN, bare_uids)
-        bare_uid_to_pos = {uid: i for i, uid in enumerate(bare_uids)}
-
-        modality_obs = self._modality_obs_arrow(name, feature_space, bare_obs)
-        for col in (OBS_INDEX_COLUMN, UID_COLUMN):
-            if col not in modality_obs.column_names:
-                raise ValueError(
-                    f"{name}/{feature_space}: obs table is missing {col!r}; "
-                    f"available: {modality_obs.column_names}"
-                )
-
-        obs_index_values = [
-            str(value) for value in modality_obs.column(OBS_INDEX_COLUMN).to_pylist()
-        ]
-        modality_uids = [str(uid) for uid in modality_obs.column(UID_COLUMN).to_pylist()]
-        self._raise_duplicate_values(
-            name, f"{self.obs_table_name}_{feature_space}", OBS_INDEX_COLUMN, obs_index_values
+        plans.append(
+            _Plan(
+                feature_space=feature_space,
+                field_name=pointer.field_name,
+                result=result,
+                dataset_record=_build_dataset_record(
+                    collection_root, name, schema, feature_space, bare_obs
+                ),
+                obs_indices=_obs_indices(
+                    collection_root, name, feature_space, obs_table_name, bare_obs
+                ),
+            )
         )
 
-        obs_index_to_position: dict[str, int] = {}
-        unknown_uids: list[str] = []
-        for obs_index, uid in zip(obs_index_values, modality_uids, strict=True):
-            pos = bare_uid_to_pos.get(uid)
-            if pos is None:
-                unknown_uids.append(uid)
-                continue
-            obs_index_to_position[obs_index] = pos
-        if unknown_uids:
+    obs_df = _prepare_obs_df(bare_obs, schema, plans)
+    ingestor = Ingestor(atlas, obs_df=obs_df, obs_table_name=obs_table_name)
+    rows_per_feature_space: dict[str, int] = {}
+    for plan in plans:
+        n = ingestor.write_array(
+            plan.result.reader,
+            field_name=plan.field_name,
+            layer_mapping=plan.result.layer_mapping,
+            dataset_record=plan.dataset_record,
+            n_vars=plan.result.n_vars,
+            var_df=plan.result.var_df,
+            required_pointer_type=get_spec(plan.feature_space).pointer_type,
+            obs_indices=plan.obs_indices,
+        )
+        rows_per_feature_space[plan.feature_space] = (
+            rows_per_feature_space.get(plan.feature_space, 0) + n
+        )
+    n_obs = ingestor.write_obs_records()
+    print(f"  added {n_obs} obs row(s)")
+    return rows_per_feature_space
+
+
+def _resolve_loader(
+    loaders: Mapping[str, Loader],
+    dataset_loaders: Mapping[str, Mapping[str, Loader]] | None,
+    dataset_name: str,
+    feature_space: str,
+) -> Loader | None:
+    """Dataset override wins over the feature-space default."""
+    override = (dataset_loaders or {}).get(dataset_name, {})
+    return override.get(feature_space) or loaders.get(feature_space)
+
+
+def _validate_loader_result(name: str, feature_space: str, result: LoaderResult) -> None:
+    if not result.layer_mapping:
+        raise ValueError(f"{name}/{feature_space}: loader returned an empty layer_mapping")
+
+    has_var_df = get_spec(feature_space).has_var_df
+    if has_var_df:
+        if result.var_df is None:
+            raise ValueError(f"{name}/{feature_space}: feature space requires a var_df")
+        if len(result.var_df) != result.n_vars:
             raise ValueError(
-                f"{name}/{feature_space}: {len(unknown_uids)} modality obs uid(s) are not "
-                f"present in the bare obs table; examples: {unknown_uids[:5]}"
+                f"{name}/{feature_space}: loader reports {result.n_vars} variables, "
+                f"but var_df has {len(result.var_df)} rows"
             )
+        if UID_COLUMN not in result.var_df.columns:
+            raise ValueError(f"{name}/{feature_space}: var_df is missing {UID_COLUMN!r}")
 
-        self._raise_duplicate_values(name, feature_space, "DATA row id", row_ids)
-        missing_from_data = [
-            obs_index for obs_index in obs_index_values if obs_index not in row_ids
-        ]
-        if missing_from_data:
-            raise ValueError(
-                f"{name}/{feature_space}: {len(missing_from_data)} obs row(s) have an "
-                f"{OBS_INDEX_COLUMN!r} with no matching DATA row; "
-                f"examples: {missing_from_data[:5]}"
-            )
-        missing_from_obs = [row_id for row_id in row_ids if row_id not in obs_index_to_position]
-        if missing_from_obs:
-            raise ValueError(
-                f"{name}/{feature_space}: {len(missing_from_obs)} DATA row id(s) have no "
-                f"matching {OBS_INDEX_COLUMN!r} in the finalized obs table; "
-                f"examples: {missing_from_obs[:5]}"
-            )
 
-        return np.array([obs_index_to_position[row_id] for row_id in row_ids], dtype=np.int64)
+def _obs_indices(
+    collection_root: str,
+    name: str,
+    feature_space: str,
+    obs_table_name: str,
+    bare_obs: pa.Table,
+) -> np.ndarray | None:
+    """Map emitted DATA rows onto positions in the finalized bare obs table.
 
-    def _modality_obs_arrow(self, name: str, feature_space: str, bare_obs: pa.Table) -> pa.Table:
-        suffixed_name = f"{self.obs_table_name}_{feature_space}"
-        suffixed = self._open_dataset_table(name, suffixed_name)
-        return suffixed.to_arrow() if suffixed is not None else bare_obs
+    Finalization keeps a ``<ObsClass>_<feature_space>`` artifact whose ``uid``
+    column is in DATA-file row order. The reader emits in that same order, so
+    emitted row ``i`` belongs at the position of that artifact's ``uid[i]`` in
+    the bare obs table. When no artifact exists (the reader is expected to emit
+    one row per bare obs row, in order), return ``None``.
+    """
+    artifact = _read_table(collection_root, name, f"{obs_table_name}_{feature_space}")
+    if artifact is None:
+        return None
 
-    @staticmethod
-    def _raise_duplicate_values(
-        dataset_name: str, table_name: str, column_name: str, values: list[str]
-    ) -> None:
-        seen = set()
-        duplicates = []
-        for value in values:
-            if value in seen:
-                duplicates.append(value)
-            else:
-                seen.add(value)
-        if duplicates:
-            raise ValueError(
-                f"{dataset_name}/{table_name}: column {column_name!r} has duplicate "
-                f"value(s); examples: {duplicates[:5]}"
-            )
+    if UID_COLUMN not in bare_obs.column_names:
+        raise ValueError(f"{name}: bare obs table is missing {UID_COLUMN!r}")
+    bare_pos = {str(uid): i for i, uid in enumerate(bare_obs.column(UID_COLUMN).to_pylist())}
 
-    def _prepare_obs_df(self, bare_obs: pa.Table, plans: list[_FeatureIngestPlan]) -> pd.DataFrame:
-        """Build the obs frame consumed by homeobox.Ingestor."""
-        obs_df = bare_obs.to_pandas()
-        arrow_schema = self.schema.obs_cls.to_arrow_schema()
-        schema_names = set(arrow_schema.names)
+    if UID_COLUMN not in artifact.column_names:
+        raise ValueError(
+            f"{name}/{feature_space}: obs artifact is missing {UID_COLUMN!r}; "
+            f"available: {artifact.column_names}"
+        )
+    fs_uids = [str(uid) for uid in artifact.column(UID_COLUMN).to_pylist()]
+    missing = [uid for uid in fs_uids if uid not in bare_pos]
+    if missing:
+        raise ValueError(
+            f"{name}/{feature_space}: {len(missing)} artifact uid(s) absent from the bare "
+            f"obs table; examples: {missing[:5]}"
+        )
+    return np.array([bare_pos[uid] for uid in fs_uids], dtype=np.int64)
 
-        for pointer in self.schema.pointers:
-            flag_name = f"has_{pointer.field_name}"
-            if flag_name in schema_names:
-                obs_df[flag_name] = False
 
-        for plan in plans:
-            flag_name = f"has_{plan.field_name}"
-            if flag_name not in obs_df.columns:
-                continue
-            values = np.asarray(obs_df[flag_name].fillna(False), dtype=bool)
-            values[plan.obs_indices] = True
-            obs_df[flag_name] = values
+def _prepare_obs_df(bare_obs: pa.Table, schema: _SchemaModel, plans: list[_Plan]) -> pd.DataFrame:
+    """Build the obs frame for homeobox.Ingestor, stamping ``has_<field>`` flags.
 
-        return obs_df
+    Homeobox null-fills unwritten pointer columns but does not derive presence
+    flags, so auto-atlas sets them: ``False`` everywhere, then ``True`` at the
+    rows each feature space actually covers.
+    """
+    obs_df = bare_obs.to_pandas()
+    schema_names = set(schema.obs_cls.to_arrow_schema().names)
 
-    def _build_dataset_record(
-        self, name: str, dataset: Any, ctx: ReaderContext, bare_obs: pa.Table
-    ) -> Any:
-        """Reuse the finalized DatasetSchema row for this fs, filling SummaryFields from obs."""
-        dataset_cls = self.schema.dataset_cls
-        tbl = self._open_dataset_table(name, self.schema.dataset_class)
-        if tbl is None:
-            raise ValueError(f"{name}: no dataset table {self.schema.dataset_class!r}")
-        df = tbl.to_arrow().to_pandas()
-        rows = df[df["feature_space"] == ctx.feature_space]
-        if rows.empty:
-            raise ValueError(
-                f"{name}: dataset table has no row for feature_space={ctx.feature_space!r}"
-            )
-        record_data = rows.iloc[0].to_dict()
-        record_data = self._fill_summary_fields(record_data, bare_obs)
-        return dataset_cls(**record_data)
+    for pointer in schema.pointers:
+        flag = f"has_{pointer.field_name}"
+        if flag in schema_names:
+            obs_df[flag] = False
 
-    def _fill_summary_fields(self, record_data: dict, obs: pa.Table) -> dict:
-        """Fill DatasetSchema SummaryFields (unique/count) from the bare obs table."""
-        summaries = self.schema.info.summary_fields.get(self.schema.dataset_class, [])
-        if not summaries:
-            return record_data
-        for s in summaries:
-            if s.target_field not in obs.column_names:
-                continue
-            values = obs.column(s.target_field).to_pylist()
-            if s.op == "count":
-                record_data[s.field_name] = len(values)
-            elif s.op == "unique":
-                seen = sorted({v for v in values if v is not None})
-                record_data[s.field_name] = seen
-        return record_data
+    for plan in plans:
+        flag = f"has_{plan.field_name}"
+        if flag not in obs_df.columns:
+            continue
+        values = np.asarray(obs_df[flag].fillna(False), dtype=bool)
+        covered = plan.obs_indices if plan.obs_indices is not None else slice(None)
+        values[covered] = True
+        obs_df[flag] = values
 
-    def _open_dataset_table(self, dataset_name: str, table_name: str):
-        db_path = os.path.join(self.root_dir, dataset_name, LANCE_DB_DIR)
-        if not os.path.isdir(db_path):
-            return None
-        db = lancedb.connect(db_path)
-        if table_name not in db.list_tables().tables:
-            return None
-        return db.open_table(table_name)
+    return obs_df
+
+
+def _build_dataset_record(
+    collection_root: str, name: str, schema: _SchemaModel, feature_space: str, bare_obs: pa.Table
+) -> object:
+    """Reuse the finalized dataset row for this fs, filling SummaryFields from obs."""
+    table = _read_table(collection_root, name, schema.dataset_class)
+    if table is None:
+        raise ValueError(f"{name}: no dataset table {schema.dataset_class!r}")
+    df = table.to_pandas()
+    rows = df[df["feature_space"] == feature_space]
+    if rows.empty:
+        raise ValueError(f"{name}: dataset table has no row for feature_space={feature_space!r}")
+    record = _fill_summary_fields(rows.iloc[0].to_dict(), schema, bare_obs)
+    return schema.dataset_cls(**record)
+
+
+def _fill_summary_fields(record: dict, schema: _SchemaModel, obs: pa.Table) -> dict:
+    """Fill the dataset record's SummaryFields (count / unique) from the obs table."""
+    for s in schema.info.summary_fields.get(schema.dataset_class, []):
+        if s.target_field not in obs.column_names:
+            continue
+        values = obs.column(s.target_field).to_pylist()
+        if s.op == "count":
+            record[s.field_name] = len(values)
+        elif s.op == "unique":
+            record[s.field_name] = sorted({v for v in values if v is not None})
+    return record
+
+
+def _read_table(collection_root: str, dataset_name: str, table_name: str) -> pa.Table | None:
+    """Read a named per-dataset lance table to Arrow, or ``None`` if absent."""
+    db_path = os.path.join(collection_root, dataset_name, LANCE_DB_DIR)
+    if not os.path.isdir(db_path):
+        return None
+    db = lancedb.connect(db_path)
+    if table_name not in db.list_tables().tables:
+        return None
+    return db.open_table(table_name).to_arrow()

@@ -37,6 +37,7 @@ from set_dataset_uid import set_dataset_uid
 from stamp_uid_on_feature_space_obs import stamp_uid_on_feature_space_obs
 from validate_tables import validate_table
 
+from auto_atlas.collection import Collection
 from auto_atlas.types import SchemaInfo, TableRef
 from auto_atlas.util import (
     discover_tables,
@@ -123,6 +124,10 @@ def finalize_collection(
     dry_run: bool = False,
 ) -> None:
     info = load_schema_info(schema_path)
+    collection = Collection.from_json(os.path.join(collection_root, "collection.json"))
+    feature_spaces_by_dataset = {
+        name: collection._datasets[name].feature_spaces for name in collection.datasets
+    }
     obs_classes = [obs_class] if obs_class else _obs_classes(info)
     if obs_classes:
         print("== join feature-space obs ==")
@@ -157,6 +162,7 @@ def finalize_collection(
                     stamp_uid_on_feature_space_obs(
                         ref.lance_db_path,
                         obs_class=class_name,
+                        feature_spaces=feature_spaces_by_dataset.get(ref.dataset),
                         dry_run=dry_run,
                     )
                     uid_stamped.add(uid_key)
