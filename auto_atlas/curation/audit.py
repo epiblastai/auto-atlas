@@ -74,6 +74,34 @@ CREATE INDEX IF NOT EXISTS idx_changes_txn ON curation_changes(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_changes_column ON curation_changes(table_name, column_name);
 """
 
+_JSON_VALUE_KEY = "__auto_atlas_json_value__"
+
+
+def _serialize_value(value: Any) -> Any:
+    """Store SQLite-unsupported structured values without changing scalar audit rows."""
+    if isinstance(value, list | dict):
+        return json.dumps({_JSON_VALUE_KEY: value})
+    return value
+
+
+def _deserialize_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if isinstance(decoded, dict) and set(decoded) == {_JSON_VALUE_KEY}:
+        return decoded[_JSON_VALUE_KEY]
+    return value
+
+
+def _deserialize_change_row(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    data["old_value"] = _deserialize_value(data["old_value"])
+    data["new_value"] = _deserialize_value(data["new_value"])
+    return data
+
 
 def _stored_new_value(change: CurationOp) -> Any:
     """The constant recorded in the new_value audit column, if the op has one."""
@@ -118,12 +146,20 @@ def _row_to_op(row: Any) -> CurationOp:
     )
     kind = OpKind(row["op_kind"])
     if kind is OpKind.REPLACE_VALUE:
-        return ReplaceValue(old_value=row["old_value"], new_value=row["new_value"], **shared)
+        return ReplaceValue(
+            old_value=_deserialize_value(row["old_value"]),
+            new_value=_deserialize_value(row["new_value"]),
+            **shared,
+        )
     if kind is OpKind.SET_COLUMN:
-        return SetColumn(new_value=row["new_value"], value_sql=row["value_sql"], **shared)
+        return SetColumn(
+            new_value=_deserialize_value(row["new_value"]),
+            value_sql=row["value_sql"],
+            **shared,
+        )
     if kind is OpKind.ADD_COLUMN:
         return AddColumn(
-            value=row["new_value"],
+            value=_deserialize_value(row["new_value"]),
             value_sql=row["value_sql"],
             data_type=row["data_type"],
             **shared,
@@ -225,8 +261,8 @@ class CurationAuditStore:
                     transaction.table_name,
                     change.kind.value,
                     change.column,
-                    getattr(change, "old_value", None),
-                    _stored_new_value(change),
+                    _serialize_value(getattr(change, "old_value", None)),
+                    _serialize_value(_stored_new_value(change)),
                     getattr(change, "new_name", None),
                     getattr(change, "value_sql", None),
                     getattr(change, "data_type", None),
@@ -305,7 +341,7 @@ class CurationAuditStore:
         ).fetchall()
         return {
             "transaction": dict(txn),
-            "changes": [dict(c) for c in changes],
+            "changes": [_deserialize_change_row(c) for c in changes],
         }
 
     def list_transactions(

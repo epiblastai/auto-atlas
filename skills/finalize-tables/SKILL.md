@@ -29,11 +29,12 @@ Finalization does **not** materialize every schema field. Columns that carry sch
 2. **Stamp `dataset_uid`** on obs tables (one constant per dataset; details below).
 3. **Populate registry keys** — only after every *target_schema* table already has its `uid` assigned (below).
 4. **Run `compute_auto_fields`** for `HoxBaseSchema` (obs) tables — fills derived columns. Must run *after* registry keys, because some derived columns may depend on them.
-5. **Clean up & validate** — two kinds of column removal, by who owns the column:
+5. **Clean up** — two kinds of column removal, by who owns the column:
    - **`*_join` scaffolding** (finalization's own transient handoff columns) is dropped **directly to Lance**, unaudited: the referencing-side `{field}_{target}_join` columns as each registry key is filled, and the target-side `{target}_join` columns once the whole collection's registry keys are resolved (a collection-level step, since one target column is shared by every referrer).
    - **Non-schema leftovers** (original *source* columns never mapped to a schema field) are dropped through the **audited** `CurationApplicator.DropColumn` — removing source data is recorded, never silent. This runs last, after the `*_join` cleanup and the whole DAG pass, so only genuine leftovers remain.
 
-   Validation constructs each row against the target schema class using the columns present (schema defaults apply to absent fields). Any value-level non-conformance is a hard error, not a silent fix. Missing ingestion-deferred columns are expected and are not an error.
+6. **Ensure schema columns** — null-initialize any non-deferred schema field that harmonization never materialized (nullable fields with Python defaults are easy to miss but still required as columns for downstream writers). Skips pointer fields, ``has_<pointer>`` flags, ``SummaryField`` aggregates, and ``global_index``. Runs after cleanup so only genuine schema gaps remain.
+7. **Validate** — constructs each row against the target schema class using the columns present (schema defaults apply to absent fields). Any value-level non-conformance is a hard error, not a silent fix. Missing ingestion-deferred columns are expected and are not an error.
 
 ## Whole-collection order is a DAG
 
@@ -114,6 +115,7 @@ For each registry key on the table the script:
 | `set_dataset_uid.py` | collection root, `--dataset`, `--obs-class` | Stamp the dataset's `uid` onto its obs table(s) as an audited broadcast. |
 | `populate_registry_keys.py` | collection root, schema, optional `--table`, optional `--publication-schema` | Seed publication referencing join columns (`0`), resolve `*_join` columns against target `uid`s, verify coverage (fail-loud on any unmatched key), fill scalar and position-aligned polymorphic registry-key columns, drop the referencing-side join columns. |
 | `drop_leftover_columns.py` | collection root, schema, optional `--table` | Drop every column that is not a field of its schema class through an audited `DropColumn` (source data; recorded, not silent). Run after registry keys and the `*_join` cleanup. |
+| `ensure_schema_columns.py` | collection root, schema, optional `--table` | Null-init any missing non-deferred schema column so finalized tables carry the full declared column set. |
 | `validate_tables.py` | collection root, schema, optional `--table`, `--limit` | Structural + per-row validation of every table against its schema class; exits non-zero and reports any column or value that does not conform. |
 
 Shared logic (schema loading via `homeobox.parser`, table discovery, dependency ordering, Arrow read/mutate/overwrite) lives in the main library: the `SchemaInfo` / `TableRef` dataclasses in `auto_atlas.types` and the functions in `auto_atlas.util`. Table discovery matches Lance table names to schema classes **by exact name** — feature-space suffixes are a staging/harmonization convention only, resolved by `join_feature_space_obs.py` before finalization discovers tables. Registry keys are described by homeobox's own `RegistryKeyField` / `PolymorphicRegistryKeyField` markers, not local copies. The deterministic columns (uid / zarr_group / derived / registry-key fills) and finalization's own `*_join` scaffolding are written directly to Lance; the two writes that touch source-derived data — `set_dataset_uid` and `drop_leftover_columns` — go through the `CurationApplicator`.

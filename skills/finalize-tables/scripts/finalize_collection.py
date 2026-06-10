@@ -13,7 +13,8 @@ Per table, in order:
 2. stamp ``dataset_uid``  (obs only)    (set_dataset_uid)
 3. populate registry keys                (populate_registry_keys)
 4. ``compute_auto_fields``  (obs only)  — derived columns, after registry keys
-5. validate against the schema class    (validate_tables), as a final sweep
+5. null-init any missing non-deferred schema columns (ensure_schema_columns)
+6. validate against the schema class    (validate_tables), as a final sweep
 
     python finalize_collection.py <collection_root> --schema <schema.py> [--dry-run]
 
@@ -32,12 +33,17 @@ import pyarrow as pa
 from assign_uids import assign_uids_for_table
 from drop_leftover_columns import drop_leftovers_for_table
 from join_feature_space_obs import join_collection
-from populate_registry_keys import populate_fks_for_table
+from populate_registry_keys import (
+    discover_publication_target_schemas,
+    populate_fks_for_table,
+    seed_publication_referencing_joins,
+)
 from set_dataset_uid import set_dataset_uid
 from stamp_uid_on_feature_space_obs import stamp_uid_on_feature_space_obs
 from validate_tables import validate_table
 
 from auto_atlas.collection import Collection
+from auto_atlas.finalize_columns import ensure_schema_columns_for_table
 from auto_atlas.types import SchemaInfo, TableRef
 from auto_atlas.util import (
     discover_tables,
@@ -138,6 +144,13 @@ def finalize_collection(
     refs = discover_tables(collection_root, info)
     order = finalization_order(info)
 
+    pub_targets = discover_publication_target_schemas(refs)
+    if pub_targets:
+        print("== seed publication registry joins ==")
+        print(f"Publication registry target(s): {sorted(pub_targets)}")
+        seed_publication_referencing_joins(refs, info, pub_targets, dry_run=dry_run)
+        print()
+
     present = sorted({r.class_name for r in refs})
     print(f"Collection: {collection_root}")
     print(f"Tables found: {[r.table_name for r in refs]}")
@@ -196,7 +209,12 @@ def finalize_collection(
     for ref in refs:
         drop_leftovers_for_table(ref, info, source=schema_path, dry_run=dry_run)
 
-    # 5c. final validation sweep across the whole collection
+    # 5c. null-init nullable schema columns harmonization never materialized
+    print("\n== ensure schema columns ==")
+    for ref in refs:
+        ensure_schema_columns_for_table(ref, info, dry_run=dry_run)
+
+    # 5d. final validation sweep across the whole collection
     print("\n== validation ==")
     problems: list[str] = []
     for ref in refs:

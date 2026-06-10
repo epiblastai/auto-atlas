@@ -102,6 +102,7 @@ collection.to_json()  # write collection.json under root_dir
 
 After `coalesce()`, dataset files live in `root/<dataset_name>/`, shared files in `root/`, and `OTHER` files in `root/other_files/`. The `collection.json` manifest records every file with its tag and feature space and is the source of truth for the steps that follow.
 
+<!---TODO: at the end of the workflow, we should ask the user if there are any additional files they'd like to add.-->
 
 ## Scripts
 
