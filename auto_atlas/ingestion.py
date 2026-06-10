@@ -7,7 +7,8 @@ module's job is to translate that package state into homeobox ingestion calls:
 
 - copy collection-level registry-key tables into the atlas;
 - register feature registries;
-- resolve each DATA file into a streaming homeobox ``Reader``;
+- delegate each DATA file family to a registered resolver that prepares a
+  streaming homeobox ``Reader``;
 - map DATA row identities onto finalized obs row positions; and
 - let :class:`homeobox.ingestion.Ingestor` write arrays and stamp pointers.
 
@@ -31,8 +32,9 @@ import pandas as pd
 import pyarrow as pa
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.group_specs import get_spec
-from homeobox.ingestion import AnnDataReader, Ingestor, Reader
+from homeobox.ingestion import Ingestor, Reader
 from homeobox.parser import parse_schema_module
+from homeobox.schema import PointerField
 
 from auto_atlas.collection import Collection, FileTypeTag
 from auto_atlas.types import SchemaInfo
@@ -102,20 +104,13 @@ class _FeatureIngestPlan:
 
 
 @dataclass
-class _ObsPointer:
-    field_name: str
-    feature_space: str
-    registry_class: str | None
-
-
-@dataclass
 class _SchemaModel:
     """Resolved schema facts the ingestor needs, derived from the schema module."""
 
     info: SchemaInfo
     obs_class: str
     dataset_class: str
-    pointers: list[_ObsPointer]
+    pointers: list[PointerField]
     registry_key_classes: list[str]
 
     @property
@@ -130,14 +125,14 @@ class _SchemaModel:
         """``{feature_space: live registry class}`` for pointers that have a registry."""
         out: dict[str, type] = {}
         for p in self.pointers:
-            if p.registry_class is None:
+            if p.feature_registry_schema is None:
                 continue
-            cls = self.info.live_class(p.registry_class)
+            cls = self.info.live_class(p.feature_registry_schema)
             if cls is not None:
                 out[p.feature_space] = cls
         return out
 
-    def pointer_for(self, feature_space: str) -> _ObsPointer:
+    def pointer_for(self, feature_space: str) -> PointerField:
         for p in self.pointers:
             if p.feature_space == feature_space:
                 return p
@@ -153,16 +148,16 @@ def _resolve_schema(schema_path: str) -> _SchemaModel:
     if obs is None or dataset is None:
         raise ValueError("schema must declare exactly one obs table and one dataset table")
 
-    pointers: list[_ObsPointer] = []
+    pointers: list[PointerField] = []
     for fobj in obs.get("fields", []):
         pmeta = fobj.get("pointer")
         if not pmeta:
             continue
         pointers.append(
-            _ObsPointer(
+            PointerField(
                 field_name=fobj["name"],
                 feature_space=pmeta["feature_space"],
-                registry_class=pmeta.get("feature_registry_schema"),
+                feature_registry_schema=pmeta.get("feature_registry_schema"),
             )
         )
 
@@ -213,35 +208,31 @@ class CollectionIngestor:
         atlas_path: str,
         *,
         obs_table_name: str | None = None,
-        zarr_layer: str = "counts",
         store_kwargs: dict | None = None,
         skip_existing: bool = True,
-        write_csc: bool = False,
         dry_run: bool = False,
     ) -> None:
         self.root_dir = os.fspath(root_dir)
         self.atlas_path = os.fspath(atlas_path)
-        self.zarr_layer = zarr_layer
         self.store_kwargs = store_kwargs
         self.skip_existing = skip_existing
-        self.write_csc = write_csc
         self.dry_run = dry_run
 
         self.collection = Collection.from_json(os.path.join(self.root_dir, "collection.json"))
         self.schema = _resolve_schema(schema_path)
         self.obs_table_name = obs_table_name or self.schema.obs_class
 
-        self._global_readers: list[DataSourceResolver] = []
-        self._fs_readers: dict[str, DataSourceResolver] = {}
-        self._dataset_readers: dict[str, DataSourceResolver] = {}
+        self._global_resolvers: list[DataSourceResolver] = []
+        self._fs_resolvers: dict[str, DataSourceResolver] = {}
+        self._dataset_resolvers: dict[str, DataSourceResolver] = {}
 
         self._atlas: RaggedAtlas | None = None
 
-    # -- reader registration ------------------------------------------------
+    # -- source resolution --------------------------------------------------
 
-    def register_reader(
+    def register_source_resolver(
         self,
-        reader: DataSourceResolver,
+        resolver: DataSourceResolver,
         *,
         dataset: str | None = None,
         feature_space: str | None = None,
@@ -253,53 +244,32 @@ class CollectionIngestor:
         global.
         """
         if dataset is not None:
-            self._dataset_readers[dataset] = reader
+            self._dataset_resolvers[dataset] = resolver
         elif feature_space is not None:
-            self._fs_readers[feature_space] = reader
+            self._fs_resolvers[feature_space] = resolver
         else:
-            self._global_readers.append(reader)
+            self._global_resolvers.append(resolver)
 
     def _resolve_source(self, ctx: ReaderContext) -> PreparedSource:
-        if ctx.dataset_name in self._dataset_readers:
-            return self._prepare_source(self._dataset_readers[ctx.dataset_name], ctx)
-        if ctx.feature_space in self._fs_readers:
-            return self._prepare_source(self._fs_readers[ctx.feature_space], ctx)
-        for reader in self._global_readers:
-            if reader.can_read(ctx):
-                return self._prepare_source(reader, ctx)
-        return self._prepare_h5ad_source(ctx)
+        if ctx.dataset_name in self._dataset_resolvers:
+            return self._prepare_source(self._dataset_resolvers[ctx.dataset_name], ctx)
+        if ctx.feature_space in self._fs_resolvers:
+            return self._prepare_source(self._fs_resolvers[ctx.feature_space], ctx)
+        for resolver in self._global_resolvers:
+            if resolver.can_read(ctx):
+                return self._prepare_source(resolver, ctx)
+        raise ValueError(
+            f"No source resolver can handle {ctx.dataset_name}/{ctx.feature_space}; "
+            f"data files: {ctx.data_files}. Register a DataSourceResolver."
+        )
 
     def _prepare_source(self, resolver: DataSourceResolver, ctx: ReaderContext) -> PreparedSource:
         if not resolver.can_read(ctx):
             raise ValueError(
-                f"Registered reader cannot handle {ctx.dataset_name}/{ctx.feature_space}; "
+                f"Registered source resolver cannot handle {ctx.dataset_name}/{ctx.feature_space}; "
                 f"data files: {ctx.data_files}"
             )
         return self._validate_source(ctx, resolver.prepare(ctx))
-
-    def _prepare_h5ad_source(self, ctx: ReaderContext) -> PreparedSource:
-        h5ads = [p for p in ctx.data_files if p.endswith(".h5ad")]
-        if len(h5ads) != 1:
-            raise ValueError(
-                f"No reader can handle {ctx.dataset_name}/{ctx.feature_space}; "
-                f"expected exactly one .h5ad DATA file for the built-in path, found {h5ads}. "
-                "Register a custom DataSourceResolver."
-            )
-
-        import anndata as ad
-
-        adata = ad.read_h5ad(h5ads[0], backed="r")
-        return self._validate_source(
-            ctx,
-            PreparedSource(
-                reader=AnnDataReader(adata),
-                row_ids=[str(name) for name in adata.obs_names],
-                n_rows=adata.n_obs,
-                n_vars=adata.n_vars,
-                var_df=ctx.var_table.to_pandas() if ctx.var_table is not None else None,
-                layer_mapping={"X": self.zarr_layer},
-            ),
-        )
 
     def _validate_source(self, ctx: ReaderContext, source: PreparedSource) -> PreparedSource:
         spec = get_spec(ctx.feature_space)
@@ -347,7 +317,7 @@ class CollectionIngestor:
         self._atlas = self._open_atlas()
 
         self._copy_registry_tables(report)
-        self._register_features(report)
+        report.features_registered.update(self._register_feature_registries())
 
         existing = self._existing_dataset_uids()
         for name in self.collection.datasets:
@@ -416,9 +386,10 @@ class CollectionIngestor:
                     .execute(arrow)
                 )
 
-    def _register_features(self, report: IngestReport) -> None:
-        """Register feature registries per feature space, unioned across datasets."""
+    def _register_feature_registries(self) -> dict[str, int]:
+        """Populate feature registries before homeobox validates per-dataset var tables."""
         registries = self.schema.feature_space_registry()
+        registered: dict[str, int] = {}
         for feature_space, registry_cls in registries.items():
             records = []
             for name in self.collection.datasets:
@@ -431,11 +402,12 @@ class CollectionIngestor:
                 continue
             print(f"  register_features({feature_space}): {len(records)} record(s)")
             if self.dry_run:
-                report.features_registered[feature_space] = 0
+                registered[feature_space] = 0
                 continue
             n_new = self._atlas.register_features(feature_space, records)
-            report.features_registered[feature_space] = n_new
+            registered[feature_space] = n_new
             print(f"    {n_new} new")
+        return registered
 
     # -- per-dataset ingestion ---------------------------------------------
 
@@ -490,7 +462,9 @@ class CollectionIngestor:
     def _build_context(self, name: str, dataset: Any, feature_space: str) -> ReaderContext:
         pointer = self.schema.pointer_for(feature_space)
         registry_cls = (
-            self.schema.info.live_class(pointer.registry_class) if pointer.registry_class else None
+            self.schema.info.live_class(pointer.feature_registry_schema)
+            if pointer.feature_registry_schema
+            else None
         )
 
         data_files = dataset.files_for(tag=FileTypeTag.DATA, feature_space=feature_space)
