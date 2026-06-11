@@ -138,16 +138,54 @@ doi: str | None = CrossReferenceField.declare(database_name="doi")
 pubchem_cid: str | None = CrossReferenceField.declare(database_name="pubchem")
 ```
 
+**`SummaryField`** — marks a column as derived by aggregating a column on
+another schema. `op` must be one of `count`, `nunique`, or `unique`. A common
+pattern is to declare summary fields on a `DatasetSchema` subclass that
+aggregate over the atlas's obs table:
+
+```python
+n_rows: int = SummaryField.declare(
+    target_schema="ObsSchema",  # string forward ref when obs schema is declared later
+    target_field="uid",
+    op="count",
+    default=0,
+)
+organism: list[str] | None = SummaryField.declare(
+    target_schema="ObsSchema",
+    target_field="organism",
+    op="unique",
+    default=None,
+)
+```
+
+**`combine_markers`** — merges multiple markers onto one field when a column
+plays more than one role (e.g. a PubChem CID is both the stable-UID source and
+an external-database cross-reference). Each marker factory writes under a
+distinct key in the field's `json_schema_extra`, so they are orthogonal:
+
+```python
+pubchem_cid: int | None = combine_markers(
+    StableUIDField.declare(),
+    CrossReferenceField.declare(database_name="pubchem"),
+    default=None,
+)
+```
+
 Name scalar references `*_uid` where possible. Prefer
 `PolymorphicRegistryKeyField` over hand-rolling a separate type column for
 polymorphic references; when you must, comment the relationship explicitly.
 
-Import all four from `homeobox.schema`:
+Import all markers from `homeobox.schema`:
 
 ```python
 from homeobox.schema import (
-    RegistryKeyField, PolymorphicRegistryKeyField,
-    OntologyAlignedField, CrossReferenceField,
+    RegistryKeyField,
+    PolymorphicRegistryKeyField,
+    OntologyAlignedField,
+    CrossReferenceField,
+    SummaryField,
+    StableUIDField,
+    combine_markers,
 )
 ```
 
