@@ -1,6 +1,6 @@
 ---
 name: atlas-designer
-description: Use when designing or writing a homeobox atlas schema.py file. Covers choosing HoxBaseSchema, FeatureBaseSchema, DatasetSchema, StableUIDBaseSchema, and LanceModel tables; declaring PointerField with feature_registry_schema, StableUIDField, and RegistryKeyField correctly; and producing schema code for a new atlas without writing ingestion scripts.
+description: Use when designing or writing a homeobox atlas schema.py file. Covers choosing HoxBaseSchema, FeatureBaseSchema, DatasetSchema, StableUIDBaseSchema, and LanceModel tables; declaring PointerField with feature_registry_schema; and all informational field markers (StableUIDField, RegistryKeyField, PolymorphicRegistryKeyField, OntologyAlignedField, CrossReferenceField, SummaryField, combine_markers). Produces schema code for a new atlas without writing ingestion scripts.
 ---
 
 # Atlas Designer
@@ -33,7 +33,7 @@ Official docs pages for homeobox:
    - optional schema maps such as `REGISTRY_SCHEMAS` and `FK_TABLE_SCHEMAS`
    - obs schema(s) subclassing `HoxBaseSchema`
    - optional materialized index/summary tables
-3. Include inline comments for every non-obvious biological meaning. Use `RegistryKeyField` for simple scalar registry keys.
+3. Include inline comments for every non-obvious biological meaning. Annotate relationships with informational field markers (see below and `references/homeobox_concepts.md`).
 4. Add pydantic validators only for real invariants: enum membership, equal-length parallel lists, generated search strings, derived stable-UID fields, or deterministic materialized IDs.
 5. Validate the schema module by importing it and creating a temporary atlas with `create_or_open_atlas`.
 
@@ -114,28 +114,58 @@ class PerturbationTarget(StableUIDBaseSchema):
 
 For bulk DataFrame workflows, ensure the derived stable field is populated before calling `<Schema>.compute_stable_uids(df)`.
 
-## Foreign Keys
+## Informational field markers
 
-Use `RegistryKeyField.declare(...)` for simple scalar references to another schema field. This stores lightweight Pydantic metadata for schema parsing and visualization; it is not stored in Arrow metadata and does not currently enforce constraints. Use `*_uid` names for references.
+These annotate ordinary schema columns to describe relationships to other tables, ontologies, external databases, or aggregations. They are Python-only metadata for schema parsing and visualization — not stored in Arrow metadata and not enforced as constraints today. See `references/homeobox_concepts.md` for full examples.
 
-Common examples:
+| Marker | Use when |
+|---|---|
+| `RegistryKeyField` | A scalar column references another schema's field |
+| `PolymorphicRegistryKeyField` | A value column can reference different schemas, selected by a parallel discriminator column |
+| `OntologyAlignedField` | A column's values align to an ontology (CL, MONDO, NCBITaxon, …) |
+| `CrossReferenceField` | A column references an external database record (DOI, PubMed, PubChem, UniProt, …) |
+| `SummaryField` | A column is derived by aggregating another schema (`op`: `count`, `nunique`, or `unique`) |
+| `combine_markers` | One column needs multiple markers (e.g. stable UID + cross-reference) |
+
+Common patterns:
 
 ```python
 publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
 donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
-target_chromosome: str | None = RegistryKeyField.declare(
-    target_schema=ReferenceSequenceSchema,
-    target_field="genbank_accession",
+
+perturbation_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
+    type_field="perturbation_types",
+    variants={
+        "small_molecule": SmallMoleculeSchema,
+        "genetic_perturbation": GeneticPerturbationSchema,
+    },
+)
+perturbation_types: list[str] | None
+
+cell_type: str | None = OntologyAlignedField.declare(ontology_name="CL")
+doi: str | None = CrossReferenceField.declare(database_name="doi")
+
+n_rows: int = SummaryField.declare(
+    target_schema="CellIndex",  # string forward ref when obs schema is declared later
+    target_field="uid",
+    op="count",
+    default=0,
+)
+
+pubchem_cid: int | None = combine_markers(
+    StableUIDField.declare(),
+    CrossReferenceField.declare(database_name="pubchem"),
     default=None,
 )
 ```
 
-For polymorphic or list references, keep explicit names and comments until Homeobox supports richer FK metadata:
+Rules:
 
-```python
-perturbation_uids: list[str] | None   # Registry key values.
-perturbation_types: list[str] | None  # Determines which perturbation table each uid belongs to.
-```
+- Use `*_uid` / `*_uids` names for registry-key references.
+- Prefer `OntologyAlignedField` for ontology terms and `CrossReferenceField` for external database IDs.
+- Prefer `PolymorphicRegistryKeyField` over undecorated parallel list columns for polymorphic references.
+- Declare `SummaryField` on `DatasetSchema` subclasses to document high-level aggregates over obs tables (row counts, distinct organisms/tissues, …). Use a string forward ref for `target_schema` when the obs schema is declared later in the module.
+- Use `combine_markers` when a single column is both a stable-UID source and a cross-reference (or carries any other combination of markers).
 
 ## Validation
 
@@ -181,13 +211,17 @@ from pydantic import Field, model_validator
 
 from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import (
+    CrossReferenceField,
     DatasetSchema as HoxDatasetSchema,
     FeatureBaseSchema,
+    OntologyAlignedField,
     RegistryKeyField,
     HoxBaseSchema,
     PointerField,
     StableUIDBaseSchema,
     StableUIDField,
+    SummaryField,
+    combine_markers,
     make_uid,
 )
 
@@ -199,8 +233,12 @@ class Assay(str, Enum):
 
 
 class PublicationSchema(StableUIDBaseSchema):
-    doi: str | None
-    pmid: int | None = StableUIDField.declare(default=None)
+    doi: str | None = CrossReferenceField.declare(database_name="doi")
+    pmid: int | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="pubmed"),
+        default=None,
+    )
     title: str | None
 
 
@@ -208,7 +246,12 @@ class AtlasDatasetSchema(HoxDatasetSchema):
     publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
     accession_database: str | None
     accession_id: str | None
-    organism: str | None
+    organism: list[str] | None = SummaryField.declare(
+        target_schema="CellIndex",
+        target_field="organism",
+        op="unique",
+        default=None,
+    )
     assay: str | None
 
 
@@ -225,9 +268,9 @@ class DonorSchema(LanceModel):
 
 
 class CellIndex(HoxBaseSchema):
-    organism: str
+    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
     assay: str
-    cell_type: str | None = None
+    cell_type: str | None = OntologyAlignedField.declare(ontology_name="CL")
     donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
 
     gene_expression: SparseZarrPointer | None = PointerField.declare(
@@ -250,7 +293,10 @@ class CellIndex(HoxBaseSchema):
 - Feature registries subclass `FeatureBaseSchema`, not plain `LanceModel`.
 - Durable non-feature entity tables subclass `StableUIDBaseSchema` when deduplication matters.
 - Every schema has at most one `StableUIDField`.
-- Simple scalar relationships use `RegistryKeyField.declare(...)`; polymorphic/list references have clear companion type fields and comments.
+- Scalar registry references use `RegistryKeyField`; polymorphic references use `PolymorphicRegistryKeyField` with a companion discriminator column.
+- Ontology terms use `OntologyAlignedField`; external database IDs use `CrossReferenceField`.
+- Dataset-level aggregates over obs tables use `SummaryField` with a valid `op` (`count`, `nunique`, or `unique`).
+- Columns with multiple roles use `combine_markers(...)` rather than picking one marker.
 - Composite stable identities are explicit derived fields.
 - Registry key-like fields are named `*_uid` or `*_uids`.
 - Dataset provenance fields live on a `DatasetSchema` subclass.
