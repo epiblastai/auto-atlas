@@ -2,8 +2,8 @@
 
 Parses a user-provided schema file (AST or runtime) to discover CamelCase table
 names, then loads tagged OBS/VAR files from each dataset in a coalesced data
-package into ``<dataset>/lance_db/``. Use ``stage_library_table.py`` for
-collection-level LIBRARY files.
+package into ``<dataset>/lance_db/``. Delimited text files skip lines starting
+with ``#``. Use ``stage_library_table.py`` for collection-level LIBRARY files.
 
 Usage:
     python scripts/stage_lance_tables.py <collection_root> --schema <schema.py> \\
@@ -129,7 +129,7 @@ def resolve_file_path(collection_root: str, path: str) -> str:
 def read_delimited_table(path: str) -> pd.DataFrame:
     """Read a delimited OBS/VAR table (.csv, .tsv, or .tsv.gz)."""
     sep = "\t" if path.endswith((".tsv", ".tsv.gz")) else ","
-    return pd.read_csv(path, sep=sep, index_col=0)
+    return pd.read_csv(path, sep=sep, index_col=0, comment="#")
 
 
 def load_indexed_table(path: str, index_name: str) -> pd.DataFrame:

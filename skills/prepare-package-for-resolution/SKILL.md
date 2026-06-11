@@ -11,6 +11,12 @@ This skill loads raw tables into Lance and names them after homeobox schema clas
 
 Tables are named after schema classes (e.g. `GeneticPerturbationSchema`) but their **columns are kept exactly as found in the source file**. This skill does not rename, reshape, or otherwise align columns to the schema's fields, so a staged table will usually not conform to its schema yet. That is expected. Evolving these raw tables into the final schema-aligned form is the job of other downstream skills.
 
+### Preparing source files before staging
+
+The staging scripts load tables into Lance without changing cell values. Delimited text files (`.csv`, `.tsv`, `.tsv.gz`) skip lines that start with `#`; other formats are read as-is.
+
+Before running the scripts, inspect the head of each source file. When the file is not ready to load cleanly, you may make small **file-level** fixes first — for example converting to the expected delimiter, removing a non-`#` header or preamble block, or stripping a duplicate header row embedded in the data. These edits should only adjust file structure (comments, headers, delimiters); do not modify actual data cell values. Apply fixes on the coalesced package paths, then run the staging scripts.
+
 Stage the **`DatasetSchema` scaffold** here (see step 3): the identity rows and their `dataset_uid` come straight from `collection.json`, so they belong with the other raw staging. The scaffold creates only those identity columns — `zarr_group`, descriptive metadata, and the `SummaryField` aggregates are each added later by the step that fills them.
 
 **Publication tables** (step 4) are also staged here, but only when the target schema defines collection-level publication registry tables and the collection includes a `publication.json` sidecar (typically under `other_files/` after coalesce). Skip step 4 if the schema has no publication registry.

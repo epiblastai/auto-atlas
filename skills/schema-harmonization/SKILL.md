@@ -76,7 +76,7 @@ A nullable schema field (`... | None`) describes what the value *may* be, not pe
 
 Before leaving any field null:
 
-1. **Exhaust the data package.** The value may live in another raw column of the same table, a sibling file (e.g. dataset/collection metadata or publication), or be derivable from a resolver.
+1. **Exhaust the data package.** The value may live in another raw column of the same table, a sibling file (e.g. dataset/collection metadata or publication), or be derivable from a resolver. The package may also include `OTHER`-tagged tabular files — supplementary row-level metadata that was not staged as the primary OBS but shares an ID column with the cell index. Check `collection.json` and the dataset directory for these; they are valid sources for joined or derived obs values.
 2. **Infer when it is unambiguous.** Constants implied by the dataset are fair game — e.g. a single-cell-line human dataset implies `organism = "Homo sapiens"`.
 3. **Ask the user** when a field is meaningful, knowable, but not present anywhere you can reach (e.g. assay, perturbation library, Ensembl release). Surface exactly which field and why you cannot fill it rather than silently nulling it.
 4. **Only then leave it null**, and say so — note which fields you left null and why.
