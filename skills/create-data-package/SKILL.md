@@ -17,6 +17,8 @@ If the user does not provide a link or path, or if the link or path does not con
 
 The main tool you'll be using is the Collection API defined in `auto_atlas`. A `Collection` is a set of related datasets, commonly part of the same publication or experiment. A `Dataset` is a set of files that go together. Following AnnData, files that contain row-level metadata are called `OBS` and those that contain feature-level metadata are called `VAR`. `DATA` is reserved for files with array data, which can come in many different formats. At the collection level, there can be `LIBRARY` tables and `OTHER` files that are relevant to all datasets.
 
+Each `(dataset, feature_space)` pair has **at most one** primary `OBS` and **at most one** `VAR` — the tables that align with that feature space's matrix rows and columns. Additional row-level metadata that joins to the main OBS on a shared ID (clinical annotations, batch labels, separate QC exports, etc.) should still be included in the package, but tagged as `OTHER`, not `OBS`.
+
 ## Worflow
 
 ### 1. Locate files
@@ -73,6 +75,8 @@ Organize files with `auto_atlas.collection`. Create one `Dataset` per experiment
 
 - A `Dataset` is one experiment. Multimodal modalities from the same experiment go in the SAME dataset, distinguished by `feature_space` — do not split them.
 - Tag files with `FileTypeTag`: `DATA` for matrices (h5ad, mtx, etc.), `OBS`/`VAR` for metadata tables, `LIBRARY` for reagent/guide/donor libraries, `OTHER` for free-form informational files (READMEs, protocols).
+- **One OBS and one VAR per feature space.** Within a dataset, each `feature_space` may have at most one `OBS` and one `VAR` — the primary tables aligned with that modality's matrix. Do not tag a second row-level table as `OBS` for the same feature space, even in a single-modality dataset.
+- **OBS-like join tables → `OTHER`.** Extra tabular metadata that joins to the main OBS on an ID column (clinical data, cell-type calls from a separate file, QC metrics, etc.) belongs in the package but should be tagged `OTHER`, not `OBS` or `VAR`.
 - Set `feature_space` (e.g. `gene_expression`, `protein_abundance`, `chromatin_accessibility`) on obs/var/data files; omit it for shared libraries and informational files.
 - Files shared across datasets (e.g. one guide library used by every experiment) are added to the `Collection` via `add_file`, not to an individual `Dataset`.
 
