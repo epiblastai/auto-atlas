@@ -2,6 +2,7 @@
 
 The agent chooses the target CamelCase table name (e.g. GeneticPerturbationSchema);
 this script only loads the file and writes Lance. All original columns are kept.
+Delimited text files skip lines starting with ``#``.
 
 Usage:
     python scripts/stage_library_table.py <collection_root> \\
@@ -66,9 +67,9 @@ def load_library_table(path: str, sheet_name: str | None = None) -> pd.DataFrame
     if lower.endswith(".parquet"):
         return pd.read_parquet(path)
     if lower.endswith((".tsv", ".tsv.gz")):
-        return pd.read_csv(path, sep="\t")
+        return pd.read_csv(path, sep="\t", comment="#")
     if lower.endswith(".csv"):
-        return pd.read_csv(path)
+        return pd.read_csv(path, comment="#")
     if lower.endswith(".xlsx"):
         return pd.read_excel(path, sheet_name=sheet_name or 0)
     raise ValueError(
