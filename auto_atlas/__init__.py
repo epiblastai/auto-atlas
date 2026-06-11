@@ -83,7 +83,15 @@ from auto_atlas.perturbations import (
     parse_combinatorial_perturbations,
 )
 from auto_atlas.proteins import resolve_proteins
-from auto_atlas.registries import CrossReferenceDbRegistry, OntologyRegistry
+from auto_atlas.registry import (
+    CrossReferenceDbRegistry,
+    OntologyRegistry,
+    ResolverBinding,
+    crossref_binding,
+    ontology_binding,
+    parse_crossref,
+    parse_ontology,
+)
 from auto_atlas.types import (
     CellLineResolution,
     GeneResolution,
@@ -128,6 +136,11 @@ __all__ = [
     "get_reference_db",
     "CrossReferenceDbRegistry",
     "OntologyRegistry",
+    "parse_crossref",
+    "parse_ontology",
+    "ResolverBinding",
+    "crossref_binding",
+    "ontology_binding",
     # Genes
     "resolve_genes",
     "detect_organism_from_ensembl_ids",

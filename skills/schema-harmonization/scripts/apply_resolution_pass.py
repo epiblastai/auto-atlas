@@ -26,26 +26,42 @@ field to its column with repeated ``--map FIELD:COLUMN``:
         --map target_strand:target_strand --map intended_gene_name:intended_gene_name \\
         --reason "resolve guide targets via BLAT" --organism human
 
+**From schema** (``--from-schema``) — parse a homeobox schema with ``homeobox.parser``,
+look up ``OntologyAlignedField`` / ``CrossReferenceField`` markers on ``--table``,
+and run one single-column pass per resolvable field (see ``auto_atlas.registry``):
+
+    python ... <lance_db> --table CellIndex --schema schema.py --from-schema --dry-run
+
     python ... --dry-run   # validate and report only; no Lance or audit writes
 
 Tools: ``--list-tools``. Optional kwargs: ``--organism``, ``--input-type``.
-Built-in tools are listed in ``auto_atlas.tool_registry``.
+Built-in tools are listed in ``auto_atlas.registry``.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import sys
-from typing import Any
+from typing import Any, NamedTuple
 
 import lancedb
 import pandas as pd
+from homeobox.parser import parse_schema_module
 
 from auto_atlas import AddColumn, CurationApplicator, CurationTransaction, default_audit_db_path
 from auto_atlas.curation.sql import infer_arrow_type
 from auto_atlas.curation.types import ApplyResult
-from auto_atlas.tool_registry import RESOLVER_TOOLS, list_resolver_tools
+from auto_atlas.registry import (
+    RESOLVER_TOOLS,
+    ResolverBinding,
+    crossref_binding,
+    list_resolver_tools,
+    ontology_binding,
+    parse_crossref,
+    parse_ontology,
+)
 from auto_atlas.types import ResolutionReport
 
 
@@ -74,6 +90,160 @@ def _parse_field_map(items: list[str]) -> dict[str, str]:
             raise ValueError(f"--map expects FIELD:COLUMN, got {item!r}")
         mapping[field] = column
     return mapping
+
+
+def _load_schema_module(schema_path: str) -> Any:
+    schema_path = os.fspath(schema_path)
+    base = os.path.splitext(os.path.basename(schema_path))[0]
+    mod_name = f"_resolution_schema_{base}"
+    spec = importlib.util.spec_from_file_location(mod_name, schema_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load schema module from {schema_path!r}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _schema_table(parsed: dict, table_name: str) -> dict:
+    candidates = [parsed.get("obs"), parsed.get("dataset"), *parsed.get("tables", [])]
+    for table in candidates:
+        if table is not None and table["class_name"] == table_name:
+            return table
+    known = sorted(table["class_name"] for table in candidates if table is not None)
+    raise ValueError(
+        f"Schema class {table_name!r} not found. Known classes: {', '.join(known) or '(none)'}"
+    )
+
+
+class SchemaResolutionPass(NamedTuple):
+    column: str
+    binding: ResolverBinding
+    authority_label: str
+    resolver_kwargs: dict[str, Any]
+
+
+def _binding_for_field(field: dict) -> tuple[ResolverBinding, str] | None:
+    ontology = field.get("ontology_aligned")
+    if isinstance(ontology, dict) and isinstance(ontology.get("ontology_name"), str):
+        authority = parse_ontology(ontology["ontology_name"])
+        return ontology_binding(authority), authority.value
+
+    cross_reference = field.get("cross_reference")
+    if isinstance(cross_reference, dict) and isinstance(cross_reference.get("database_name"), str):
+        authority = parse_crossref(cross_reference["database_name"])
+        return crossref_binding(authority), authority.value
+
+    return None
+
+
+def plan_schema_resolution_passes(
+    schema_table: dict,
+) -> tuple[list[SchemaResolutionPass], list[str]]:
+    """Return single-column passes for resolvable marked fields and skip messages."""
+    passes: list[SchemaResolutionPass] = []
+    skipped: list[str] = []
+
+    for field in schema_table.get("fields", []):
+        column = field["name"]
+        resolved = _binding_for_field(field)
+        if resolved is None:
+            continue
+
+        binding, authority_label = resolved
+        if binding.mode == "none":
+            skipped.append(f"{column} ({authority_label}): no registered resolver")
+            continue
+        if binding.mode == "custom":
+            skipped.append(
+                f"{column} ({authority_label}): custom resolver "
+                f"({binding.tool}); run resolve_ontology_terms manually"
+            )
+            continue
+
+        passes.append(
+            SchemaResolutionPass(
+                column=column,
+                binding=binding,
+                authority_label=authority_label,
+                resolver_kwargs=dict(binding.resolver_kwargs),
+            )
+        )
+
+    return passes, skipped
+
+
+def _merge_resolver_kwargs(
+    pass_kwargs: dict[str, Any],
+    *,
+    organism: str | None,
+    input_type: str | None,
+) -> dict[str, Any]:
+    merged = dict(pass_kwargs)
+    if organism is not None:
+        merged["organism"] = organism
+    if input_type is not None:
+        merged["input_type"] = input_type
+    return merged
+
+
+def _default_reason(column: str, authority_label: str, tool: str) -> str:
+    return f"canonicalize {column} via {tool} ({authority_label})"
+
+
+def apply_from_schema(
+    lance_db_path: str,
+    *,
+    table_name: str,
+    schema_path: str,
+    reason: str | None,
+    organism: str | None,
+    input_type: str | None,
+    dry_run: bool,
+) -> list[ApplyResult | None]:
+    module = _load_schema_module(schema_path)
+    parsed = parse_schema_module(module)
+    schema_table = _schema_table(parsed, table_name)
+    passes, skipped = plan_schema_resolution_passes(schema_table)
+
+    for message in skipped:
+        print(f"Skip: {message}")
+
+    if not passes:
+        print("No resolvable schema fields to process.")
+        return []
+
+    print(f"Planned {len(passes)} pass(es) for {table_name!r}:")
+    for planned in passes:
+        binding = planned.binding
+        print(
+            f"  {planned.column}: {binding.tool} -> {binding.resolution_field} "
+            f"({planned.authority_label})"
+        )
+
+    results: list[ApplyResult | None] = []
+    for planned in passes:
+        binding = planned.binding
+        pass_reason = reason or _default_reason(
+            planned.column, planned.authority_label, binding.tool
+        )
+        pass_kwargs = _merge_resolver_kwargs(
+            planned.resolver_kwargs,
+            organism=organism,
+            input_type=input_type,
+        )
+        print(f"\n--- {planned.column} ({binding.tool}) ---")
+        result = apply_resolution_pass(
+            lance_db_path,
+            table_name=table_name,
+            tool=binding.tool,
+            column=planned.column,
+            resolution_field_name=binding.resolution_field,
+            reason=pass_reason,
+            resolver_kwargs=pass_kwargs or None,
+            dry_run=dry_run,
+        )
+        results.append(result)
+    return results
 
 
 def resolve_distinct_values(
@@ -253,6 +423,12 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lance_db_path")
     parser.add_argument("--table", required=True)
+    parser.add_argument("--schema", help="Homeobox schema.py (required with --from-schema)")
+    parser.add_argument(
+        "--from-schema",
+        action="store_true",
+        help="Resolve every resolvable OntologyAlignedField / CrossReferenceField on --table",
+    )
     parser.add_argument("--tool", help="Registered resolver name")
     parser.add_argument("--list-tools", action="store_true")
     parser.add_argument("--column", help="Column to resolve and update")
@@ -287,6 +463,50 @@ def main(argv: list[str] | None = None) -> None:
     if args.list_tools:
         for name in list_resolver_tools():
             print(name)
+        return
+
+    if args.from_schema:
+        if args.fanout:
+            parser.error("--from-schema cannot be combined with --fanout")
+        if not args.schema:
+            parser.error("--schema is required with --from-schema")
+        if any([args.tool, args.column, args.resolution_field_name]):
+            parser.error(
+                "--from-schema sets --tool, --column, and --resolution-field-name from the schema; "
+                "do not pass them manually"
+            )
+
+        lance_db_path = os.fspath(args.lance_db_path)
+        try:
+            results = apply_from_schema(
+                lance_db_path,
+                table_name=args.table,
+                schema_path=args.schema,
+                reason=args.reason,
+                organism=args.organism,
+                input_type=args.input_type,
+                dry_run=args.dry_run,
+            )
+        except (ImportError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        if not results:
+            print("No changes proposed.")
+            return
+
+        for result in results:
+            if result is None:
+                continue
+            print(f"Status: {result.status.value}")
+            if result.error:
+                print(f"Error: {result.error}", file=sys.stderr)
+                sys.exit(1)
+            for applied in result.applied_changes:
+                op = applied.operation
+                print(f"  {op.kind.value}: {op.column} rows_updated={applied.rows_updated}")
+        if args.dry_run:
+            print("(dry run — Lance not mutated)")
         return
 
     resolver_kwargs: dict[str, object] = {}

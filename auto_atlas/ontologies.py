@@ -42,8 +42,7 @@ class OntologyEntity(StrEnum):
     SEX = "sex"
 
 
-# Mapping from OntologyEntity → ontology prefix(es) in the reference DB
-_ENTITY_TO_PREFIXES: dict[OntologyEntity, list[str]] = {
+ENTITY_TO_PREFIXES: dict[OntologyEntity, list[str]] = {
     OntologyEntity.CELL_TYPE: ["CL"],
     OntologyEntity.TISSUE: ["UBERON"],
     OntologyEntity.DISEASE: ["MONDO"],
@@ -53,8 +52,7 @@ _ENTITY_TO_PREFIXES: dict[OntologyEntity, list[str]] = {
     OntologyEntity.ETHNICITY: ["HANCESTRO"],
 }
 
-# Mapping from OntologyEntity → display name
-_ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
+ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
     OntologyEntity.CELL_TYPE: "Cell Ontology",
     OntologyEntity.CELL_LINE: "Cellosaurus",
     OntologyEntity.TISSUE: "UBERON",
@@ -66,8 +64,7 @@ _ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
     OntologyEntity.SEX: "PATO",
 }
 
-# Development stage prefix selection by organism
-_DEVELOPMENT_STAGE_ORGANISM_PREFIX: dict[str, str] = {
+DEVELOPMENT_STAGE_ORGANISM_PREFIX: dict[str, str] = {
     "human": "HsapDv",
     "homo_sapiens": "HsapDv",
     "mouse": "MmusDv",
@@ -91,10 +88,10 @@ _SEX_TERMS: dict[str, tuple[str, str]] = {
 def _get_prefixes(entity: OntologyEntity, organism: str | None = None) -> list[str]:
     """Get the ontology prefix(es) for an entity, considering organism for dev stage."""
     if entity == OntologyEntity.DEVELOPMENT_STAGE and organism:
-        prefix = _DEVELOPMENT_STAGE_ORGANISM_PREFIX.get(organism.lower())
+        prefix = DEVELOPMENT_STAGE_ORGANISM_PREFIX.get(organism.lower())
         if prefix:
             return [prefix]
-    prefixes = _ENTITY_TO_PREFIXES.get(entity)
+    prefixes = ENTITY_TO_PREFIXES.get(entity)
     if prefixes is None:
         raise ValueError(f"No ontology prefix mapping for entity {entity}")
     return prefixes
@@ -329,7 +326,7 @@ def _resolve_against_db(
     organism: str | None = None,
 ) -> list[OntologyResolution]:
     """Resolve values against the local ontology_terms table."""
-    ontology_name = _ENTITY_TO_ONTOLOGY_NAME.get(entity, entity.value)
+    ontology_name = ENTITY_TO_ONTOLOGY_NAME.get(entity, entity.value)
     prefixes = _get_prefixes(entity, organism)
 
     # Build combined name and synonym indices across all relevant prefixes

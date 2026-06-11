@@ -130,6 +130,8 @@ These annotate ordinary schema columns to describe relationships to other tables
 Common patterns:
 
 ```python
+from auto_atlas.registry import CrossReferenceDbRegistry, OntologyRegistry
+
 publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
 donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
 
@@ -142,8 +144,8 @@ perturbation_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
 )
 perturbation_types: list[str] | None
 
-cell_type: str | None = OntologyAlignedField.declare(ontology_name="CL")
-doi: str | None = CrossReferenceField.declare(database_name="doi")
+cell_type: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.CL)
+doi: str | None = CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.DOI)
 
 n_rows: int = SummaryField.declare(
     target_schema="CellIndex",  # string forward ref when obs schema is declared later
@@ -154,7 +156,7 @@ n_rows: int = SummaryField.declare(
 
 pubchem_cid: int | None = combine_markers(
     StableUIDField.declare(),
-    CrossReferenceField.declare(database_name="pubchem"),
+    CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.PUBCHEM),
     default=None,
 )
 ```
@@ -162,7 +164,7 @@ pubchem_cid: int | None = combine_markers(
 Rules:
 
 - Use `*_uid` / `*_uids` names for registry-key references.
-- Prefer `OntologyAlignedField` for ontology terms and `CrossReferenceField` for external database IDs.
+- Prefer `OntologyAlignedField` for ontology terms and `CrossReferenceField` for external database IDs. Pass values from `auto_atlas.registry.OntologyRegistry` and `CrossReferenceDbRegistry` — not free-form strings — so resolution tooling can look up the correct resolver.
 - Prefer `PolymorphicRegistryKeyField` over undecorated parallel list columns for polymorphic references.
 - Declare `SummaryField` on `DatasetSchema` subclasses to document high-level aggregates over obs tables (row counts, distinct organisms/tissues, …). Use a string forward ref for `target_schema` when the obs schema is declared later in the module.
 - Use `combine_markers` when a single column is both a stable-UID source and a cross-reference (or carries any other combination of markers).
@@ -225,6 +227,8 @@ from homeobox.schema import (
     make_uid,
 )
 
+from auto_atlas.registry import CrossReferenceDbRegistry, OntologyRegistry
+
 
 class Assay(str, Enum):
     RNA_SEQ = "RNA-seq"
@@ -233,10 +237,10 @@ class Assay(str, Enum):
 
 
 class PublicationSchema(StableUIDBaseSchema):
-    doi: str | None = CrossReferenceField.declare(database_name="doi")
+    doi: str | None = CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.DOI)
     pmid: int | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="pubmed"),
+        CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.PUBMED),
         default=None,
     )
     title: str | None
@@ -268,9 +272,9 @@ class DonorSchema(LanceModel):
 
 
 class CellIndex(HoxBaseSchema):
-    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
+    organism: str = OntologyAlignedField.declare(ontology_name=OntologyRegistry.NCBITAXON)
     assay: str
-    cell_type: str | None = OntologyAlignedField.declare(ontology_name="CL")
+    cell_type: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.CL)
     donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
 
     gene_expression: SparseZarrPointer | None = PointerField.declare(

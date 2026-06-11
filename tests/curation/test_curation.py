@@ -25,7 +25,7 @@ from auto_atlas.curation import (
     default_audit_db_path,
 )
 from auto_atlas.curation.sql import arrow_type_from_alias, build_where_clause
-from auto_atlas.tool_registry import RESOLVER_TOOLS, ResolverTool
+from auto_atlas.registry import RESOLVER_TOOLS, ResolverTool
 from auto_atlas.types import GeneResolution, ResolutionReport
 
 
