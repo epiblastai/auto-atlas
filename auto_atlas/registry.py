@@ -1,63 +1,80 @@
-"""Map ontology and cross-reference authorities to resolver tools.
-
-Bindings are explicit: one :class:`ResolverBinding` per :class:`OntologyRegistry` or
-:class:`CrossReferenceDbRegistry` member. Harmonization scripts look up bindings here;
-they do not infer tools from field names.
-"""
+"""Schema authorities, resolver bindings, and registered harmonization tools."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
-from auto_atlas.registries import CrossReferenceDbRegistry, OntologyRegistry
+from auto_atlas.genes import resolve_genes
+from auto_atlas.guide_rna import resolve_guide_sequences
+from auto_atlas.molecules import resolve_molecules
+from auto_atlas.ontologies import (
+    OntologyEntity,
+    resolve_assays,
+    resolve_cell_lines,
+    resolve_cell_types,
+    resolve_diseases,
+    resolve_organisms,
+    resolve_tissues,
+)
+from auto_atlas.proteins import resolve_proteins
+from auto_atlas.types import ResolutionReport
 
 ResolutionMode = Literal["single", "custom", "none"]
 
 
-class OntologyEntity(StrEnum):
-    """Supported ontology entity types for CELLxGENE-compatible resolution."""
+class OntologyRegistry(StrEnum):
+    """Ontology prefixes loaded into the unified ``ontology_terms`` table."""
 
-    CELL_TYPE = "cell_type"
-    CELL_LINE = "cell_line"
-    TISSUE = "tissue"
-    DISEASE = "disease"
-    ORGANISM = "organism"
-    ASSAY = "assay"
-    DEVELOPMENT_STAGE = "development_stage"
-    ETHNICITY = "ethnicity"
-    SEX = "sex"
+    CL = "CL"
+    UBERON = "UBERON"
+    MONDO = "MONDO"
+    NCBITAXON = "NCBITaxon"
+    EFO = "EFO"
+    HSAPDV = "HsapDv"
+    MMUSDV = "MmusDv"
+    HANCESTRO = "HANCESTRO"
 
 
-ENTITY_TO_PREFIXES: dict[OntologyEntity, list[str]] = {
-    OntologyEntity.CELL_TYPE: ["CL"],
-    OntologyEntity.TISSUE: ["UBERON"],
-    OntologyEntity.DISEASE: ["MONDO"],
-    OntologyEntity.ORGANISM: ["NCBITaxon"],
-    OntologyEntity.ASSAY: ["EFO"],
-    OntologyEntity.DEVELOPMENT_STAGE: ["HsapDv", "MmusDv"],
-    OntologyEntity.ETHNICITY: ["HANCESTRO"],
-}
+class CrossReferenceDbRegistry(StrEnum):
+    """Identifier authority names represented in the reference DB."""
 
-ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
-    OntologyEntity.CELL_TYPE: "Cell Ontology",
-    OntologyEntity.CELL_LINE: "Cellosaurus",
-    OntologyEntity.TISSUE: "UBERON",
-    OntologyEntity.DISEASE: "MONDO",
-    OntologyEntity.ORGANISM: "NCBITaxon",
-    OntologyEntity.ASSAY: "EFO",
-    OntologyEntity.DEVELOPMENT_STAGE: "HsapDv",
-    OntologyEntity.ETHNICITY: "HANCESTRO",
-    OntologyEntity.SEX: "PATO",
-}
+    ENSEMBL = "ENSEMBL"
+    ENSEMBL_BIOMART = "Ensembl BioMart"
+    GENCODE = "GENCODE"
+    NCBI_GENE = "NCBI Gene"
+    NCBI_TAXONOMY = "NCBI Taxonomy"
+    UNIPROT = "UniProt"
+    PUBCHEM = "PubChem"
+    CELLOSAURUS = "Cellosaurus"
+    DOI = "DOI"
+    PUBMED = "PubMed"
+    GENBANK = "GenBank"
+    REFSEQ = "RefSeq"
+    INCHI = "InChI"
+    CHEMBL = "ChEMBL"
 
-DEVELOPMENT_STAGE_ORGANISM_PREFIX: dict[str, str] = {
-    "human": "HsapDv",
-    "homo_sapiens": "HsapDv",
-    "mouse": "MmusDv",
-    "mus_musculus": "MmusDv",
-}
+
+def parse_ontology(value: str) -> OntologyRegistry:
+    """Parse a schema ``ontology_name`` string into :class:`OntologyRegistry`."""
+    try:
+        return OntologyRegistry(value)
+    except ValueError as exc:
+        known = ", ".join(sorted(member.value for member in OntologyRegistry))
+        raise ValueError(f"Unknown ontology {value!r}. Known ontologies: {known}") from exc
+
+
+def parse_crossref(value: str) -> CrossReferenceDbRegistry:
+    """Parse a schema ``database_name`` string into :class:`CrossReferenceDbRegistry`."""
+    try:
+        return CrossReferenceDbRegistry(value)
+    except ValueError as exc:
+        known = ", ".join(sorted(member.value for member in CrossReferenceDbRegistry))
+        raise ValueError(
+            f"Unknown cross-reference database {value!r}. Known databases: {known}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -70,6 +87,12 @@ class ResolverBinding:
     requires_organism: bool = False
     mode: ResolutionMode = "single"
     ontology_entity: OntologyEntity | None = None
+
+
+@dataclass(frozen=True)
+class ResolverTool:
+    fn: Callable[..., ResolutionReport]
+    values_param: str = "values"
 
 
 _CROSSREF_NONE = ResolverBinding(tool="", mode="none")
@@ -148,8 +171,25 @@ def crossref_binding(database: CrossReferenceDbRegistry) -> ResolverBinding:
         raise KeyError(f"No resolver binding for cross-reference database {database!r}") from exc
 
 
-def validate_bindings(resolver_tools: dict[str, object]) -> None:
-    """Verify every registry member has a binding and single-mode tools are registered."""
+RESOLVER_TOOLS: dict[str, ResolverTool] = {
+    "resolve_genes": ResolverTool(resolve_genes),
+    "resolve_proteins": ResolverTool(resolve_proteins),
+    "resolve_molecules": ResolverTool(resolve_molecules),
+    "resolve_guide_sequences": ResolverTool(resolve_guide_sequences, values_param="sequences"),
+    "resolve_cell_types": ResolverTool(resolve_cell_types),
+    "resolve_tissues": ResolverTool(resolve_tissues),
+    "resolve_diseases": ResolverTool(resolve_diseases),
+    "resolve_organisms": ResolverTool(resolve_organisms),
+    "resolve_assays": ResolverTool(resolve_assays),
+    "resolve_cell_lines": ResolverTool(resolve_cell_lines),
+}
+
+
+def list_resolver_tools() -> list[str]:
+    return sorted(RESOLVER_TOOLS)
+
+
+def _validate_bindings() -> None:
     missing_ontology = set(OntologyRegistry) - set(ONTOLOGY_BINDINGS)
     if missing_ontology:
         raise RuntimeError(
@@ -164,15 +204,18 @@ def validate_bindings(resolver_tools: dict[str, object]) -> None:
         )
 
     for ontology, binding in ONTOLOGY_BINDINGS.items():
-        if binding.mode == "single" and binding.tool not in resolver_tools:
+        if binding.mode == "single" and binding.tool not in RESOLVER_TOOLS:
             raise RuntimeError(
                 f"Ontology {ontology.value!r} binding tool {binding.tool!r} "
                 f"is not registered in RESOLVER_TOOLS"
             )
 
     for database, binding in CROSSREF_BINDINGS.items():
-        if binding.mode == "single" and binding.tool not in resolver_tools:
+        if binding.mode == "single" and binding.tool not in RESOLVER_TOOLS:
             raise RuntimeError(
                 f"Cross-reference {database.value!r} binding tool {binding.tool!r} "
                 f"is not registered in RESOLVER_TOOLS"
             )
+
+
+_validate_bindings()

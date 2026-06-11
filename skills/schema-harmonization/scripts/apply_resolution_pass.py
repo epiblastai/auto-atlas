@@ -29,7 +29,7 @@ field to its column with repeated ``--map FIELD:COLUMN``:
     python ... --dry-run   # validate and report only; no Lance or audit writes
 
 Tools: ``--list-tools``. Optional kwargs: ``--organism``, ``--input-type``.
-Built-in tools are listed in ``auto_atlas.tool_registry``.
+Built-in tools are listed in ``auto_atlas.registry``.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ import pandas as pd
 from auto_atlas import AddColumn, CurationApplicator, CurationTransaction, default_audit_db_path
 from auto_atlas.curation.sql import infer_arrow_type
 from auto_atlas.curation.types import ApplyResult
-from auto_atlas.tool_registry import RESOLVER_TOOLS, list_resolver_tools
+from auto_atlas.registry import RESOLVER_TOOLS, list_resolver_tools
 from auto_atlas.types import ResolutionReport
 
 

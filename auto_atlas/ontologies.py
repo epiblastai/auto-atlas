@@ -14,6 +14,7 @@ Cell lines use a local Cellosaurus table (cell_lines + cell_line_synonyms).
 
 import functools
 from collections import defaultdict
+from enum import StrEnum
 
 import polars as pl
 from homeobox.util import sql_escape
@@ -24,13 +25,51 @@ from auto_atlas.metadata_table import (
     ONTOLOGY_TERMS_TABLE,
     get_reference_db,
 )
-from auto_atlas.resolution_registry import (
-    DEVELOPMENT_STAGE_ORGANISM_PREFIX,
-    ENTITY_TO_ONTOLOGY_NAME,
-    ENTITY_TO_PREFIXES,
-    OntologyEntity,
-)
 from auto_atlas.types import CellLineResolution, OntologyResolution, ResolutionReport
+
+
+class OntologyEntity(StrEnum):
+    """Supported ontology entity types for CELLxGENE-compatible resolution."""
+
+    CELL_TYPE = "cell_type"
+    CELL_LINE = "cell_line"
+    TISSUE = "tissue"
+    DISEASE = "disease"
+    ORGANISM = "organism"
+    ASSAY = "assay"
+    DEVELOPMENT_STAGE = "development_stage"
+    ETHNICITY = "ethnicity"
+    SEX = "sex"
+
+
+ENTITY_TO_PREFIXES: dict[OntologyEntity, list[str]] = {
+    OntologyEntity.CELL_TYPE: ["CL"],
+    OntologyEntity.TISSUE: ["UBERON"],
+    OntologyEntity.DISEASE: ["MONDO"],
+    OntologyEntity.ORGANISM: ["NCBITaxon"],
+    OntologyEntity.ASSAY: ["EFO"],
+    OntologyEntity.DEVELOPMENT_STAGE: ["HsapDv", "MmusDv"],
+    OntologyEntity.ETHNICITY: ["HANCESTRO"],
+}
+
+ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
+    OntologyEntity.CELL_TYPE: "Cell Ontology",
+    OntologyEntity.CELL_LINE: "Cellosaurus",
+    OntologyEntity.TISSUE: "UBERON",
+    OntologyEntity.DISEASE: "MONDO",
+    OntologyEntity.ORGANISM: "NCBITaxon",
+    OntologyEntity.ASSAY: "EFO",
+    OntologyEntity.DEVELOPMENT_STAGE: "HsapDv",
+    OntologyEntity.ETHNICITY: "HANCESTRO",
+    OntologyEntity.SEX: "PATO",
+}
+
+DEVELOPMENT_STAGE_ORGANISM_PREFIX: dict[str, str] = {
+    "human": "HsapDv",
+    "homo_sapiens": "HsapDv",
+    "mouse": "MmusDv",
+    "mus_musculus": "MmusDv",
+}
 
 # Hard-coded sex terms (PATO terms are not in the OBO download)
 _SEX_TERMS: dict[str, tuple[str, str]] = {

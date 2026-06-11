@@ -8,7 +8,7 @@ The expected input is a LanceDB URL and table name along with a target homeobox 
 
 A schema marks an ontology field with `OntologyAlignedField.declare(ontology_name="CL")` (or `CrossReferenceField.declare(database_name="Cellosaurus")` for cell lines). **That marker is informational only** — the column itself holds just the canonical label string. There is no separate CURIE column to fill, so resolution is an **in-place canonicalization** of the label column: raw value → canonical ontology name in the same column. The CURIE is used internally for matching and recorded as op provenance; it is not written to the table.
 
-Nine entity types resolve across eight ontologies plus Cellosaurus. The ontologies loaded into the unified `ontology_terms` reference table are enumerated by `OntologyRegistry` in `auto_atlas/registries.py`; cell lines resolve against Cellosaurus, a `CrossReferenceDbRegistry` authority.
+Nine entity types resolve across eight ontologies plus Cellosaurus. The ontologies loaded into the unified `ontology_terms` reference table are enumerated by `OntologyRegistry` in `auto_atlas/registry.py`; cell lines resolve against Cellosaurus, a `CrossReferenceDbRegistry` authority.
 
 | Schema field | Ontology / authority | Resolver tool | Path |
 |---|---|---|---|

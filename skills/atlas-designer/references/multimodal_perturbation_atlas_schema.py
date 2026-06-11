@@ -25,7 +25,7 @@ from homeobox.schema import (
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
-from auto_atlas.registries import CrossReferenceDbRegistry, OntologyRegistry
+from auto_atlas.registry import CrossReferenceDbRegistry, OntologyRegistry
 
 # ---------------------------------------------------------------------------
 # Enums

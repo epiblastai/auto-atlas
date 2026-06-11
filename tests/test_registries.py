@@ -1,4 +1,4 @@
-from auto_atlas.registries import CrossReferenceDbRegistry, OntologyRegistry
+from auto_atlas.registry import CrossReferenceDbRegistry, OntologyRegistry
 
 
 def test_ontology_registry_values() -> None:
