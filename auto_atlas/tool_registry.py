@@ -45,3 +45,8 @@ RESOLVER_TOOLS: dict[str, ResolverTool] = {
 
 def list_resolver_tools() -> list[str]:
     return sorted(RESOLVER_TOOLS)
+
+
+from auto_atlas.resolution_registry import validate_bindings
+
+validate_bindings(RESOLVER_TOOLS)

@@ -61,7 +61,6 @@ from auto_atlas.ncbi import (
     search_pubmed_by_title,
 )
 from auto_atlas.ontologies import (
-    OntologyEntity,
     get_ontology_ancestors,
     get_ontology_descendants,
     get_ontology_siblings,
@@ -83,7 +82,18 @@ from auto_atlas.perturbations import (
     parse_combinatorial_perturbations,
 )
 from auto_atlas.proteins import resolve_proteins
-from auto_atlas.registries import CrossReferenceDbRegistry, OntologyRegistry
+from auto_atlas.registries import (
+    CrossReferenceDbRegistry,
+    OntologyRegistry,
+    parse_crossref,
+    parse_ontology,
+)
+from auto_atlas.resolution_registry import (
+    OntologyEntity,
+    ResolverBinding,
+    crossref_binding,
+    ontology_binding,
+)
 from auto_atlas.types import (
     CellLineResolution,
     GeneResolution,
@@ -128,6 +138,11 @@ __all__ = [
     "get_reference_db",
     "CrossReferenceDbRegistry",
     "OntologyRegistry",
+    "parse_crossref",
+    "parse_ontology",
+    "ResolverBinding",
+    "crossref_binding",
+    "ontology_binding",
     # Genes
     "resolve_genes",
     "detect_organism_from_ensembl_ids",

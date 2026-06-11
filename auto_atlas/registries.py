@@ -27,3 +27,29 @@ class CrossReferenceDbRegistry(StrEnum):
     UNIPROT = "UniProt"
     PUBCHEM = "PubChem"
     CELLOSAURUS = "Cellosaurus"
+    DOI = "DOI"
+    PUBMED = "PubMed"
+    GENBANK = "GenBank"
+    REFSEQ = "RefSeq"
+    INCHI = "InChI"
+    CHEMBL = "ChEMBL"
+
+
+def parse_ontology(value: str) -> OntologyRegistry:
+    """Parse a schema ``ontology_name`` string into :class:`OntologyRegistry`."""
+    try:
+        return OntologyRegistry(value)
+    except ValueError as exc:
+        known = ", ".join(sorted(member.value for member in OntologyRegistry))
+        raise ValueError(f"Unknown ontology {value!r}. Known ontologies: {known}") from exc
+
+
+def parse_crossref(value: str) -> CrossReferenceDbRegistry:
+    """Parse a schema ``database_name`` string into :class:`CrossReferenceDbRegistry`."""
+    try:
+        return CrossReferenceDbRegistry(value)
+    except ValueError as exc:
+        known = ", ".join(sorted(member.value for member in CrossReferenceDbRegistry))
+        raise ValueError(
+            f"Unknown cross-reference database {value!r}. Known databases: {known}"
+        ) from exc

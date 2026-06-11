@@ -25,6 +25,8 @@ from homeobox.schema import (
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
+from auto_atlas.registries import CrossReferenceDbRegistry, OntologyRegistry
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -121,11 +123,11 @@ def _build_perturbation_search_string(uids: list[str] | None, types: list[str] |
 
 class PublicationSchema(RegistryBaseSchema):
     # The doi for the paper, there is almost always one
-    doi: str = CrossReferenceField.declare(database_name="DOI")
+    doi: str = CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.DOI)
     # PubMed id for the paper, there is almost always one
     pmid: int | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="PubMed"),
+        CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.PUBMED),
         default=...,
     )
     # The title of the paper
@@ -198,11 +200,15 @@ class AtlasDatasetSchema(DatasetSchema):
 class DonorSchema(RegistryBaseSchema):
     age_years: float | None = None
     sex: str | None = None
-    ethnicity: str | None = OntologyAlignedField.declare(ontology_name="HANCESTRO")
+    ethnicity: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.HANCESTRO)
     cause_of_death: str | None = None  # for postmortem tissue
     pmi_hours: float | None = None  # postmortem interval in hours
-    clinical_diagnosis: str | None = OntologyAlignedField.declare(ontology_name="MONDO")
-    pathological_diagnosis: str | None = OntologyAlignedField.declare(ontology_name="MONDO")
+    clinical_diagnosis: str | None = OntologyAlignedField.declare(
+        ontology_name=OntologyRegistry.MONDO
+    )
+    pathological_diagnosis: str | None = OntologyAlignedField.declare(
+        ontology_name=OntologyRegistry.MONDO
+    )
 
     # Free-text notes about the donor
     description: str | None = None
@@ -231,7 +237,9 @@ class GenomicFeatureSchema(FeatureBaseSchema):
 
     # The canonical gene this feature maps to, if applicable
     gene_name: str | None
-    ensembl_gene_id: str | None = CrossReferenceField.declare(database_name="ENSEMBL")
+    ensembl_gene_id: str | None = CrossReferenceField.declare(
+        database_name=CrossReferenceDbRegistry.ENSEMBL
+    )
 
     # The specific feature identity.
     # For gene-level features this equals ensembl_gene_id.
@@ -253,7 +261,7 @@ class GenomicFeatureSchema(FeatureBaseSchema):
     ensembl_version: str | None = None
 
     # The organism this feature belongs to, e.g. "human", "mouse"
-    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
+    organism: str = OntologyAlignedField.declare(ontology_name=OntologyRegistry.NCBITAXON)
 
     @model_validator(mode="after")
     def validate_feature_type(self) -> Self:
@@ -278,7 +286,7 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
     # The role this sequence plays in the assembly; uses the SequenceRole enum
     sequence_role: SequenceRole
 
-    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
+    organism: str = OntologyAlignedField.declare(ontology_name=OntologyRegistry.NCBITAXON)
     # The genome assembly name, e.g. "GRCh38", "GRCm39"
     assembly: str
 
@@ -286,10 +294,12 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
     # (e.g. "CM000663.2" for chr1 in GRCh38)
     genbank_accession: str | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="GenBank"),
+        CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.GENBANK),
         default=None,
     )
-    refseq_accession: str | None = CrossReferenceField.declare(database_name="RefSeq", default=None)
+    refseq_accession: str | None = CrossReferenceField.declare(
+        database_name=CrossReferenceDbRegistry.REFSEQ, default=None
+    )
 
     # Whether this sequence is part of the primary assembly,
     # i.e. the set of sequences most analyses restrict to
@@ -306,7 +316,7 @@ class ProteinSchema(FeatureBaseSchema):
     # The UniProt accession ID, e.g., "P04637"
     uniprot_id: str | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="UniProt"),
+        CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.UNIPROT),
         default=...,
     )
     # The recommended protein name from UniProt, e.g., "Cellular tumor antigen p53"
@@ -314,7 +324,7 @@ class ProteinSchema(FeatureBaseSchema):
     # The primary gene name encoding this protein, e.g., "TP53"
     gene_name: str | None
     # The organism
-    organism: str | None = OntologyAlignedField.declare(ontology_name="NCBITaxon")
+    organism: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.NCBITAXON)
     # The amino acid sequence
     sequence: str | None
     # Length of the amino acid sequence
@@ -343,13 +353,17 @@ class SmallMoleculeSchema(RegistryBaseSchema):
     # PubChem CID for the molecule
     pubchem_cid: int | None = combine_markers(
         StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="PubChem"),
+        CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.PUBCHEM),
         default=None,
     )
     # Standard name for the molecule
     iupac_name: str | None
-    inchi_key: str | None = CrossReferenceField.declare(database_name="InChI")
-    chembl_id: str | None = CrossReferenceField.declare(database_name="ChEMBL")
+    inchi_key: str | None = CrossReferenceField.declare(
+        database_name=CrossReferenceDbRegistry.INCHI
+    )
+    chembl_id: str | None = CrossReferenceField.declare(
+        database_name=CrossReferenceDbRegistry.CHEMBL
+    )
     # Common name for the molecule
     name: str | None
 
@@ -389,7 +403,9 @@ class GeneticPerturbationSchema(RegistryBaseSchema):
 
     # genbank_accession code for the chromosome where the guide is targeting,
     # e.g. "CM000663.2" for chr1 in GRCh38
-    target_chromosome: str | None = CrossReferenceField.declare(database_name="GenBank")
+    target_chromosome: str | None = CrossReferenceField.declare(
+        database_name=CrossReferenceDbRegistry.GENBANK
+    )
 
     # Genomic target coordinates — where the reagent physically acts
     target_start: int | None = None
@@ -400,7 +416,9 @@ class GeneticPerturbationSchema(RegistryBaseSchema):
     # A guide near a promoter "targets" a gene by convention, but a guide
     # in an enhancer might affect multiple genes.
     intended_gene_name: str | None = None
-    intended_ensembl_gene_id: str | None = CrossReferenceField.declare(database_name="ENSEMBL")
+    intended_ensembl_gene_id: str | None = CrossReferenceField.declare(
+        database_name=CrossReferenceDbRegistry.ENSEMBL
+    )
 
     # Where the guide lands relative to gene structure; uses the TargetContext enum
     target_context: TargetContext | None = None
@@ -437,7 +455,9 @@ class BiologicPerturbationSchema(RegistryBaseSchema):
     biologic_type: BiologicPerturbationType  # Uses the BiologicPerturbationType enum
 
     # Protein identity, if applicable
-    uniprot_id: str | None = CrossReferenceField.declare(database_name="UniProt")
+    uniprot_id: str | None = CrossReferenceField.declare(
+        database_name=CrossReferenceDbRegistry.UNIPROT
+    )
 
     # Provenance
     vendor: str | None = None
@@ -458,19 +478,23 @@ class BiologicPerturbationSchema(RegistryBaseSchema):
 
 class CellIndex(HoxBaseSchema):
     # Assay used as EFO
-    assay: str = OntologyAlignedField.declare(ontology_name="EFO")
+    assay: str = OntologyAlignedField.declare(ontology_name=OntologyRegistry.EFO)
     # The organism that the cells in this sample come from
-    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
+    organism: str = OntologyAlignedField.declare(ontology_name=OntologyRegistry.NCBITAXON)
     # Cell line used
-    cell_line: str | None = CrossReferenceField.declare(database_name="Cellosaurus")
+    cell_line: str | None = CrossReferenceField.declare(
+        database_name=CrossReferenceDbRegistry.CELLOSAURUS
+    )
     # Annotated cell type, does not apply to immortalized cell lines or iPSC-derived cells
     # Generally should only be used for primary cells or well-annotated cell lines like PBMCs
-    cell_type: str | None = OntologyAlignedField.declare(ontology_name="CL")
+    cell_type: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.CL)
     # Development stage, disease, and tissue only apply to primary cells. For example, `disease`
     # should be null even for a "cancer cell line".
-    development_stage: str | None
-    disease: str | None = OntologyAlignedField.declare(ontology_name="MONDO")
-    tissue: str | None = OntologyAlignedField.declare(ontology_name="UBERON")
+    development_stage: str | None = OntologyAlignedField.declare(
+        ontology_name=OntologyRegistry.HSAPDV
+    )
+    disease: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.MONDO)
+    tissue: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.UBERON)
     donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
     # Number of days the cells were cultured in vitro before profiling, if applicable.
     days_in_vitro: float | None
