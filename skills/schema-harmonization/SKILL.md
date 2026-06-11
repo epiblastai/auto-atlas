@@ -42,7 +42,7 @@ Every op requires `column` and `tool`. Also set provenance when you have it: `re
 
 ## Apply workflow
 
-**Script vs custom code** — Use `scripts/apply_resolution_pass.py` when a single column's distinct values can be resolved and written back in place (default mode), or when one multi-field resolver should fan out to several columns at once (`--fanout`, see below). Use custom Python (still through `CurationApplicator`) for everything else: renaming raw columns, building staging columns with `value_sql`, copying across columns with supported `value_sql` expressions (see the LanceDB SQL caveat above), or reshaping rows.
+**Script vs custom code** — Use `scripts/apply_resolution_pass.py` when a single column's distinct values can be resolved and written back in place (default mode), when one multi-field resolver should fan out to several columns at once (`--fanout`, see below), or when several single-column passes can be driven from schema field markers (`--from-schema`, see below). Use custom Python (still through `CurationApplicator`) for everything else: renaming raw columns, building staging columns with `value_sql`, copying across columns with supported `value_sql` expressions (see the LanceDB SQL caveat above), or reshaping rows.
 
 1. **Plan** — decide the table name and ordered `CurationOp` list (and whether a resolution pass runs before or after structural ops).
 2. **Dry run** — `applicator.apply(txn, dry_run=True)` (or `--dry-run` on the script) validates the ops and reports what *would* apply, mutating neither Lance nor the audit DB. Use it to check ops and provenance, especially for large or mixed transactions.
@@ -65,6 +65,19 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
 ```
 
 Pass `--input-type` (resolver-specific, e.g. `symbol`/`ensembl_id` for `resolve_genes`) when you already know what a column holds; it is more precise than the default `auto` and avoids mis-inference. Resolver kwargs like `--organism` and `--input-type` are forwarded to the tool.
+
+**From-schema mode (`--from-schema`)** — run one single-column pass per resolvable `OntologyAlignedField` / `CrossReferenceField` on the target schema class, without choosing tools manually. The script parses the schema with `homeobox.parser`, looks up each field's authority in `auto_atlas.registry` (`OntologyRegistry` / `CrossReferenceDbRegistry` → resolver binding), prints the plan, then runs each pass in order (one audited transaction per field). Schema markers must use those registry enums — not free-form strings — so the authority string is unambiguous.
+
+```bash
+python skills/schema-harmonization/scripts/apply_resolution_pass.py \
+  <path/to/lance_db> \
+  --table CellIndex \
+  --schema <path/to/schema.py> \
+  --from-schema \
+  --dry-run
+```
+
+Use this after column names are aligned to the schema. It fits obs / cell-index tables with several ontology columns (organism, tissue, cell_type, assay, …) and simple cross-reference columns (e.g. Ensembl ID in place). It does **not** replace fan-out workflows (`resolve_proteins`, `resolve_molecules`, `resolve_guide_sequences`) or custom ontology passes (`development_stage`, `ethnicity` — bindings are `custom` and the script skips them with a message; see **references/ontology_resolution.md**). Fields whose authority has no resolver (DOI, PubMed, GenBank, …) are skipped the same way. Optional `--organism` and `--input-type` apply to every planned pass; `--reason` overrides the default per-field reason. Do not combine `--from-schema` with `--fanout` or manual `--tool` / `--column` / `--resolution-field-name`.
 
 **Fan-out mode (`--fanout`)** — for multi-field resolvers (e.g. `resolve_guide_sequences`) where one expensive call fills several correlated columns. Resolves the distinct values of `--key-column` once, then fans each resolution field out to a target column via a single keyed `MergeColumns` merge. Map fields with repeated `--map FIELD:COLUMN`; target columns that do not exist yet are auto-created (null-initialized, type inferred). Driving the single-column script once per field would re-run the resolver each time, so prefer `--fanout` here. Details in **references/auditable_curation.md**; a worked example in **references/genetic_perturbation_resolution.md**.
 
@@ -99,7 +112,7 @@ Resolution maps raw values to canonical identifiers per domain. Per-domain refer
 - **references/gene_resolution.md** — gene symbols and Ensembl IDs (var-level), with a full worked example.
 - **references/genetic_perturbation_resolution.md** — genetic perturbation targets, reagents, guide sequences, and row-multiplying reshapes.
 - **references/molecule_resolution.md** — small-molecule names, SMILES, and PubChem CIDs to canonical structures.
-- **references/ontology_resolution.md** — free-text biological metadata to ontology term labels (obs / cell-index fields).
+- **references/ontology_resolution.md** — free-text biological metadata to ontology term labels (obs / cell-index fields). Prefer `--from-schema` on aligned obs tables when markers use `auto_atlas.registry` enums; use the reference for custom entities and manual passes.
 - **references/protein_resolution.md** — protein aliases, antibody targets, and UniProt accessions.
 - **references/publication_resolution.md** — collection-level publication and section tables (mostly column alignment).
 
