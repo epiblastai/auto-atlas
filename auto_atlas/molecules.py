@@ -524,4 +524,4 @@ def resolve_molecules(
         One ``MoleculeResolution`` per input value.
     """
     pipeline = _PIPELINES_BY_INPUT_TYPE[input_type]
-    return pipeline.resolve(values, input_type=input_type)
+    return pipeline.resolve(values)

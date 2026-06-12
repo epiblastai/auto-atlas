@@ -1,7 +1,7 @@
 """Shared resolver pipeline.
 
 A ``ResolverPipeline`` composes the superset of stages every ``resolve_*``
-function performs (preprocess → classify → deduplicate → local lookup →
+function performs (preprocess → deduplicate → local lookup →
 disambiguate/build → enrich → fallback → cache write → re-expand → report).
 Stages are optional; the pipeline supplies no-op defaults, so a cache-only
 resolver omits ``fallbacks``/``cache_sink`` rather than branching internally.
@@ -12,7 +12,6 @@ onto it is ``resolve_guide_sequences`` (see ``auto_atlas.guide_rna``).
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -28,7 +27,6 @@ class ResolverContext:
     """Per-run context passed to every stage."""
 
     organism: str | None = None
-    input_type: str | None = None  # resolver-specific, e.g. "symbol", "name"
     tool: str = "resolve_unknown"
     # Extensible bag for entity, min_similarity, assembly, species, etc.
     extras: dict[str, object] = field(default_factory=dict)
@@ -70,8 +68,6 @@ class PipelineState[R: Resolution]:
     # normalized_key → original (first-seen casing)
     key_map: dict[str, str] = field(default_factory=dict)
     unique_keys: list[str] = field(default_factory=list)
-    # normalized_key → lane label (from the classifier)
-    lanes: dict[str, str] = field(default_factory=dict)
     # normalized_key → LookupHit or None (miss)
     local_hits: dict[str, LookupHit | None] = field(default_factory=dict)
     # normalized_key → fully built resolution
@@ -137,15 +133,12 @@ class ResolverPipeline[R: Resolution]:
     result_builder: ResultBuilder[R]  # builds resolved results and unresolved stubs
 
     preprocessor: Preprocessor | None = None
-    classifier: Callable[[str, ResolverContext], str] | None = None
     prescan_fallbacks: list[Fallback[R]] = field(default_factory=list)
     local_lookup: LocalLookup[R] | None = None
     disambiguator: Disambiguator | None = None
     enricher: Enricher[R] | None = None
     fallbacks: list[Fallback[R]] = field(default_factory=list)
     cache_sink: CacheSink[R] | None = None
-
-    chunk_size: int = 500
 
     def resolve(
         self, values: list[str], *, tool: str | None = None, **ctx_kwargs
@@ -157,7 +150,6 @@ class ResolverPipeline[R: Resolution]:
         state: PipelineState[R] = PipelineState(inputs=list(values), context=ctx)
         self._run_preprocess(state)
         self._run_deduplicate(state)
-        self._run_classify(state)
         self._run_prescan_fallbacks(state)
         self._run_local_lookup(state)
         self._run_disambiguate_and_build(state)
@@ -179,12 +171,6 @@ class ResolverPipeline[R: Resolution]:
             if key not in state.key_map:
                 state.key_map[key] = original
                 state.unique_keys.append(key)
-
-    def _run_classify(self, state: PipelineState[R]) -> None:
-        if self.classifier is None:
-            return
-        for key in state.unique_keys:
-            state.lanes[key] = self.classifier(key, state.context)
 
     def _run_prescan_fallbacks(self, state: PipelineState[R]) -> None:
         for fb in self.prescan_fallbacks:

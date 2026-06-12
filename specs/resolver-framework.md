@@ -132,7 +132,6 @@ class ResolverContext:
     """Per-run context passed to every stage."""
 
     organism: str | None = None
-    input_type: str | None = None  # resolver-specific, e.g. "symbol", "name"
     tool: str = "resolve_unknown"
     # Extensible bag for entity, min_similarity, assembly, etc.
     extras: dict[str, object] = field(default_factory=dict)
@@ -249,18 +248,12 @@ class ResolverPipeline(Generic[R]):
     result_builder: ResultBuilder[R]  # builds resolved results and unresolved stubs
 
     preprocessor: Preprocessor | None = None
-    # Returns a lane label per key. Keys in different lanes are looked up
-    # separately, so a lane may also encode a per-key query partition (e.g.
-    # genes derive organism from the Ensembl prefix — see ``LanceDBBatchLookup``).
-    classifier: Callable[[str, ResolverContext], str] | None = None
     prescan_fallbacks: list[Fallback[R]] = field(default_factory=list)
     local_lookup: LocalLookup[R] | None = None
     disambiguator: Disambiguator | None = None
     enricher: Enricher[R] | None = None
     fallbacks: list[Fallback[R]] = field(default_factory=list)
     cache_sink: CacheSink[R] | None = None
-
-    chunk_size: int = 500
 
     def resolve(self, values: list[str], *, tool: str | None = None, **ctx_kwargs) -> ResolutionReport:
         # ``tool`` overrides the report/provenance label per call, so resolvers
@@ -269,7 +262,6 @@ class ResolverPipeline(Generic[R]):
         ctx = ResolverContext(tool=tool or self.tool, **ctx_kwargs)
         state = self._init_state(values, ctx)
         state = self._run_preprocess(state)
-        state = self._run_classify(state)
         state = self._run_deduplicate(state)
         state = self._run_prescan_fallbacks(state)
         state = self._run_local_lookup(state)
@@ -286,21 +278,36 @@ remain the stable entry points and delegate to a module-level pipeline instance.
 ### Declaring a resolver
 
 ```python
-# auto_atlas/resolvers/genes.py
+# auto_atlas/genes.py — two lanes, routed in plain Python (no classifier stage)
 
-gene_pipeline = ResolverPipeline[GeneResolution](
+gene_symbol_pipeline = ResolverPipeline[GeneResolution](
     tool="resolve_genes",
-    result_builder=GeneResultBuilder(),  # carries organism onto resolved + stub
+    result_builder=GeneSymbolResultBuilder(),  # carries organism onto resolved + stub
     preprocessor=lowercase_strip,
-    classifier=classify_symbol_or_ensembl,
-    local_lookup=GeneAliasLookup(),  # LanceDB batch, chunk_size inherited
+    local_lookup=AliasLookup(GENOMIC_FEATURE_ALIASES_TABLE, "ensembl_gene_id"),
     disambiguator=CanonicalAliasDisambiguator(),
     enricher=GeneFeatureEnricher(),
-    # no fallbacks, no cache_sink
+)
+
+gene_ensembl_pipeline = ResolverPipeline[GeneResolution](
+    tool="resolve_genes",
+    result_builder=GeneEnsemblResultBuilder(),
+    local_lookup=GeneEnsemblLookup(),  # detects organism per Ensembl prefix, then queries
 )
 
 def resolve_genes(values, organism="human", input_type="auto") -> ResolutionReport:
-    return gene_pipeline.resolve(values, organism=organism, input_type=input_type)
+    # classify by input shape, run each lane, merge positionally back into order
+    symbol_idx, ensembl_idx = _split_lanes(values, input_type)
+    results = [None] * len(values)
+    if symbol_idx:
+        report = gene_symbol_pipeline.resolve([values[i] for i in symbol_idx], organism=organism, ...)
+        for i, res in zip(symbol_idx, report.results, strict=True):
+            results[i] = res
+    if ensembl_idx:
+        report = gene_ensembl_pipeline.resolve([values[i] for i in ensembl_idx], organism=organism)
+        for i, res in zip(ensembl_idx, report.results, strict=True):
+            results[i] = res
+    ...
 ```
 
 ```python
@@ -336,37 +343,31 @@ molecule_name_pipeline = ResolverPipeline[MoleculeResolution](
 
 ### Built-in lookup strategies
 
-Reusable `LocalLookup` implementations so ontologies and genes do not fork
-batching logic:
+Only one `LocalLookup` turned out to be genuinely shared across resolvers; the
+rest were specific enough that a hand-written class per module was clearer than a
+parameterized abstraction. As-built:
 
 | Class | Backing | Used for |
 |-------|---------|----------|
-| `LanceDBBatchLookup` | `table.search().where(... IN ...)` | genes, proteins, molecules, guide RNAs |
-| `MemoryIndexLookup` | `functools.lru_cache` index built from LanceDB | ontology terms |
-| `FTSLookup` | LanceDB FTS on a synonym table | cell lines (step 3 of cascade) |
-| `HardcodedLookup` | static dict | sex terms |
+| `AliasLookup(table_name, id_column)` | alias table, chunked `IN`, grouped by `alias` | genes (symbol lane), proteins |
+| `GeneEnsemblLookup` | features table, organism detected per Ensembl prefix | genes (ensembl lane) |
+| `CompoundSynonymLookup` | synonyms + compounds tables | molecules (name lane) |
+| `OntologyTermLookup` / `CellLineLookup` | `functools.lru_cache` name/synonym index | ontology terms, cell lines |
+| `SexLookup` | static `_SEX_TERMS` dict | sex terms |
+| `GuideRnaCacheLookup` | guide_rnas table (negative cache) | guide RNAs |
 
-`LanceDBBatchLookup` constructor:
+`AliasLookup` is the shared one: it reads `ctx.extras["scientific_name"]`,
+queries the alias `table_name`, groups rows by `alias`, and returns a `LookupHit`
+whose candidates carry `{id, is_canonical}` for `CanonicalAliasDisambiguator`.
 
-```python
-LanceDBBatchLookup(
-    table_name: str,
-    key_column: str,
-    partition: Callable[[ResolverContext, str], str],  # per-key WHERE clause
-    select: list[str],
-    group_by: str | None = None,
-)
-```
-
-``partition(ctx, key)`` returns the SQL filter for a single key; keys whose
-clause is identical batch together into one chunked ``IN`` query. A constant
-return (`lambda ctx, key: organism_clause(ctx)`) recovers the simple
-"one filter for the whole run" case used by proteins. The per-key form is what
-lets `resolve_genes` keep its current behavior: Ensembl IDs detect organism from
-their prefix and each detected organism produces a distinct clause, so IDs are
-grouped by organism and queried per group — exactly today's
-`detect_organism_from_ensembl_ids` → group-by-organism loop, but expressed
-declaratively instead of forked into the resolver.
+> The original spec proposed a single generic `LanceDBBatchLookup(table_name,
+> key_column, partition, select, group_by)` to back every lookup. During
+> migration this never paid off — each lookup needed enough table-specific shape
+> (grouping, id columns, version stripping, per-prefix organism detection) that
+> the generic form would have been configured into the same code anyway. The
+> genes ensembl lane in particular owns its `detect_organism_from_ensembl_ids` →
+> group-by-organism loop directly in `GeneEnsemblLookup` rather than expressing
+> it as a `partition` callback. The abstraction was dropped.
 
 ### Built-in fallback patterns
 
@@ -383,8 +384,8 @@ These utilities are the first migration targets; they back the pipeline stages
 above:
 
 1. **`deduplicate_keys(state, normalizer)`** — builds `key_map` and unique key list.
-2. **`LanceDBBatchLookup`** — 500-chunk `IN` queries with `sql_escape`, grouped by
-   `partition(ctx, key)`.
+2. **`AliasLookup(table_name, id_column)`** — 500-chunk `IN` queries with
+   `sql_escape`, grouped by `alias`; shared by genes (symbol lane) and proteins.
 3. **`CanonicalAliasDisambiguator`** — `is_canonical` flag logic shared by genes
    and proteins (confidence 1.0 / 0.9 / 0.7, sorted alternatives), returning a
    `Disambiguation` whose `chosen` is the winning alias row.
@@ -394,8 +395,12 @@ above:
 
 ## Mapping current resolvers
 
-| Resolver | Preprocess | Classify | Local | Disambiguate | Enrich | Fallback | Cache write |
-|----------|------------|----------|-------|--------------|--------|----------|-------------|
+The "Lane split" column is *not* a pipeline stage — resolvers that handle several
+input shapes route in plain Python in their public function (one pipeline per
+lane), then merge results positionally. There is no `classifier` stage.
+
+| Resolver | Preprocess | Lane split | Local | Disambiguate | Enrich | Fallback | Cache write |
+|----------|------------|------------|-------|--------------|--------|----------|-------------|
 | `resolve_genes` | lowercase | symbol/ensembl | alias + feature tables | canonical | features | — | — |
 | `resolve_proteins` | lowercase | — | alias table | canonical | proteins | — | — |
 | `resolve_molecules` (name) | clean_compound_name | control skip | synonyms + compounds | title preference | SMILES | PubChem → ChEMBL | — |
@@ -458,11 +463,13 @@ etc.) stay stable through Phase 3. Internal implementation swaps under them.
 
 These were open questions in earlier drafts; the API above now commits to them.
 
-1. **Classification produces per-key lane labels**, not branched
-   `PipelineState`s. A lane both routes a key to its `LocalLookup` and can encode
-   a query partition (the `partition(ctx, key)` clause), so the genes
-   symbol/ensembl split *and* its per-Ensembl-ID organism grouping fall out of one
-   mechanism. Single state, per-key tags — matches `resolve_genes` today.
+1. **Multi-input resolvers route in plain Python, not via a `classifier`
+   stage.** The earlier draft proposed per-key lane labels carried in
+   `PipelineState`; in practice the resolvers that handle several input shapes
+   (genes, molecules, ontologies) compose one pipeline per lane and split/merge
+   in their public function. The genes per-Ensembl-ID organism grouping lives
+   inside `GeneEnsemblLookup`. The `classifier` stage was never used and was
+   removed.
 2. **Disambiguation returns the chosen candidate, not a string.** `Disambiguator`
    yields a `Disambiguation` carrying the winning raw row; `ResultBuilder.build`
    reads typed fields off it. This keeps the `ensembl_gene_id` / `pubchem_cid` /
