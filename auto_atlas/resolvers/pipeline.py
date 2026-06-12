@@ -147,8 +147,13 @@ class ResolverPipeline[R: Resolution]:
 
     chunk_size: int = 500
 
-    def resolve(self, values: list[str], **ctx_kwargs) -> ResolutionReport:
-        ctx = ResolverContext(tool=self.tool, **ctx_kwargs)
+    def resolve(
+        self, values: list[str], *, tool: str | None = None, **ctx_kwargs
+    ) -> ResolutionReport:
+        # ``tool`` overrides the report/provenance label per call, so resolvers
+        # that share one implementation under several public names (the ontology
+        # wrappers) can each stamp their own tool. Defaults to ``self.tool``.
+        ctx = ResolverContext(tool=tool or self.tool, **ctx_kwargs)
         state: PipelineState[R] = PipelineState(inputs=list(values), context=ctx)
         self._run_preprocess(state)
         self._run_deduplicate(state)
@@ -263,7 +268,7 @@ class ResolverPipeline[R: Resolution]:
         resolved = sum(1 for r in results if r.resolved_value is not None)
         ambiguous = sum(1 for r in results if len(r.alternatives) > 0)
         return ResolutionReport(
-            tool=self.tool,
+            tool=state.context.tool,
             total=len(results),
             resolved=resolved,
             unresolved=len(results) - resolved,

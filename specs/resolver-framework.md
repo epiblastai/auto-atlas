@@ -262,8 +262,11 @@ class ResolverPipeline(Generic[R]):
 
     chunk_size: int = 500
 
-    def resolve(self, values: list[str], **ctx_kwargs) -> ResolutionReport:
-        ctx = ResolverContext(tool=self.tool, **ctx_kwargs)
+    def resolve(self, values: list[str], *, tool: str | None = None, **ctx_kwargs) -> ResolutionReport:
+        # ``tool`` overrides the report/provenance label per call, so resolvers
+        # that share one pipeline under several public names (the ontology
+        # wrappers: resolve_cell_types, resolve_tissues, …) each stamp their own.
+        ctx = ResolverContext(tool=tool or self.tool, **ctx_kwargs)
         state = self._init_state(values, ctx)
         state = self._run_preprocess(state)
         state = self._run_classify(state)
