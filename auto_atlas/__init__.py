@@ -29,8 +29,7 @@ from auto_atlas.genes import (
     is_placeholder_symbol,
     resolve_genes,
 )
-from auto_atlas.gget import annotate_genomic_coordinates
-from auto_atlas.guide_rna import resolve_guide_sequences
+from auto_atlas.guide_rna import annotate_genomic_coordinates, resolve_guide_sequences
 from auto_atlas.metadata_table import configure_reference_db, get_reference_db
 from auto_atlas.molecules import (
     canonicalize_smiles,
