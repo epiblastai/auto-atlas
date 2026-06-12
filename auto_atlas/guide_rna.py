@@ -23,6 +23,12 @@ from auto_atlas.metadata_table import (
     GuideRnaRecord,
     get_reference_db,
 )
+from auto_atlas.resolvers import (
+    Disambiguation,
+    LookupHit,
+    ResolverContext,
+    ResolverPipeline,
+)
 from auto_atlas.types import GuideRnaResolution, ResolutionReport
 
 logger = logging.getLogger(__name__)
@@ -406,6 +412,80 @@ def _save_to_cache(records: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline stages (see specs/resolver-framework.md)
+# ---------------------------------------------------------------------------
+
+
+def _uppercase_key(value: str, ctx: ResolverContext) -> str:
+    """Preprocess: guides are cached and aligned by uppercase sequence."""
+    return value.upper()
+
+
+class GuideRnaCacheLookup:
+    """Local lookup: batch read of the guide RNA cache table, keyed by sequence."""
+
+    def lookup(self, keys: list[str], ctx: ResolverContext) -> dict[str, LookupHit | None]:
+        species = ctx.extras["species"]
+        cached_rows = _lookup_cached(keys, species)
+        logger.info("Guide RNA cache: %d/%d sequences found", len(cached_rows), len(keys))
+        hits: dict[str, LookupHit | None] = {}
+        for key in keys:
+            row = cached_rows.get(key)
+            hits[key] = (
+                LookupHit(key=key, candidates=[row], source="lancedb_cache")
+                if row is not None
+                else None
+            )
+        return hits
+
+
+class GuideRnaResultBuilder:
+    """Build a ``GuideRnaResolution`` from a cache hit, or an unresolved stub."""
+
+    def build(
+        self, key: str, original: str, picked: Disambiguation | None, ctx: ResolverContext
+    ) -> GuideRnaResolution:
+        if picked is None or picked.chosen is None:
+            return GuideRnaResolution(
+                input_value=original, resolved_value=None, confidence=0.0, source="none"
+            )
+        return _record_to_resolution(picked.chosen, original)
+
+
+class BlatEnsemblFallback:
+    """Fallback for cache misses: UCSC BLAT alignment → Ensembl overlap annotation.
+
+    Always returns a resolution (an unresolved one on BLAT failure) so the miss
+    is memoized by the cache sink rather than re-aligned on the next call.
+    """
+
+    def try_resolve(self, key: str, original: str, ctx: ResolverContext) -> GuideRnaResolution:
+        res = _resolve_single(key, ctx.organism, ctx.extras["assembly"], ctx.extras["species"])
+        res.input_value = original
+        return res
+
+
+class GuideRnaCacheSink:
+    """Write-back: persist freshly aligned guides (including misses) for reuse."""
+
+    def to_record(self, result: GuideRnaResolution, ctx: ResolverContext) -> dict | None:
+        return _resolution_to_record(result, ctx.extras["species"])
+
+    def write(self, records: list[dict]) -> None:
+        _save_to_cache(records)
+
+
+guide_pipeline: ResolverPipeline[GuideRnaResolution] = ResolverPipeline(
+    tool="resolve_guide_sequences",
+    result_builder=GuideRnaResultBuilder(),
+    preprocessor=_uppercase_key,
+    local_lookup=GuideRnaCacheLookup(),
+    fallbacks=[BlatEnsemblFallback()],
+    cache_sink=GuideRnaCacheSink(),
+)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -438,53 +518,10 @@ def resolve_guide_sequences(
             f"Unsupported organism '{organism}'. Supported: {list(_ASSEMBLY_MAP.keys())}"
         )
 
-    # Deduplicate, preserving original casing for input_value
-    upper_to_original: dict[str, str] = {}
-    for seq in sequences:
-        upper = seq.upper()
-        if upper not in upper_to_original:
-            upper_to_original[upper] = seq
-    unique_upper = list(upper_to_original.keys())
-
-    # 1. Cache lookup
-    cached_rows = _lookup_cached(unique_upper, species)
-    logger.info(
-        "Guide RNA cache: %d/%d sequences found",
-        len(cached_rows),
-        len(unique_upper),
-    )
-
-    # 2. Resolve uncached via BLAT + Ensembl
-    resolution_map: dict[str, GuideRnaResolution] = {}
-    new_records: list[dict] = []
-
-    for upper_seq in unique_upper:
-        original = upper_to_original[upper_seq]
-        if upper_seq in cached_rows:
-            resolution_map[upper_seq] = _record_to_resolution(cached_rows[upper_seq], original)
-        else:
-            res = _resolve_single(upper_seq, organism, assembly, species)
-            # Preserve original casing in input_value
-            res.input_value = original
-            resolution_map[upper_seq] = res
-            new_records.append(_resolution_to_record(res, species))
-
-    # 3. Save new results to cache
-    _save_to_cache(new_records)
-
-    # 4. Map back to input order
-    results: list[GuideRnaResolution] = [resolution_map[seq.upper()] for seq in sequences]
-
-    resolved_count = sum(1 for r in results if r.resolved_value is not None)
-    ambiguous_count = sum(1 for r in results if len(r.alternatives) > 0)
-
-    return ResolutionReport(
-        tool="resolve_guide_sequences",
-        total=len(sequences),
-        resolved=resolved_count,
-        unresolved=len(sequences) - resolved_count,
-        ambiguous=ambiguous_count,
-        results=results,
+    return guide_pipeline.resolve(
+        sequences,
+        organism=organism,
+        extras={"assembly": assembly, "species": species},
     )
 
 
