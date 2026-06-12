@@ -55,7 +55,7 @@ class Dataset:
 
     @property
     def feature_spaces(self) -> list[str]:
-        # Distinct, sorted feature spaces present across this dataset's files.
+        """Distinct, sorted feature spaces present across this dataset's files."""
         spaces = {tf.feature_space for tf in self._tagged_files.values()}
         spaces.discard(None)
         return sorted(spaces)
@@ -76,8 +76,10 @@ class Dataset:
         tag: FileTypeTag | None = None,
         feature_space: str | None = None,
     ) -> list[str]:
-        # List files, optionally filtered by tag and/or feature space. A filter
-        # left as None places no constraint on that axis.
+        """List files, optionally filtered by tag and/or feature space.
+
+        A filter left as None places no constraint on that axis.
+        """
         return [
             tf.path
             for tf in self._tagged_files.values()
@@ -86,8 +88,10 @@ class Dataset:
         ]
 
     def _rename_file(self, old_path: str, new_path: str) -> None:
-        # Internal: rewrite a tracked path (used by Collection.coalesce_datasets
-        # after physically moving/copying files).
+        """Internal: rewrite a tracked path.
+
+        Used by Collection.coalesce after physically moving/copying files.
+        """
         tf = self._tagged_files.pop(old_path)
         self._tagged_files[new_path] = TaggedFile(new_path, tf.tag, tf.feature_space)
 
@@ -186,11 +190,13 @@ class Collection:
         dest_dir: str,
         copy: bool,
     ) -> list[tuple[str, str]]:
-        # Copy or move files into dest_dir, keeping their original filenames,
-        # and return the list of (old_path, new_path). Collisions (two files
-        # sharing a basename, or an existing destination) are checked up front
-        # so nothing is moved when the group is invalid. This is a
-        # local-filesystem operation (shutil does not handle s3 urls).
+        """Copy or move files into dest_dir, keeping their original filenames.
+
+        Returns the list of (old_path, new_path). Collisions (two files sharing
+        a basename, or an existing destination) are checked up front so nothing
+        is moved when the group is invalid. This is a local-filesystem operation
+        (shutil does not handle s3 urls).
+        """
         os.makedirs(dest_dir, exist_ok=True)
 
         moves: list[tuple[str, str]] = []
@@ -213,11 +219,13 @@ class Collection:
         return moves
 
     def coalesce(self, copy: bool = True) -> None:
-        # Organize files on disk into root_dir. Each not-yet-coalesced dataset's
-        # files go to root_dir/<dataset_name>/; collection-level OTHER files go
-        # to root_dir/other_files/ and other shared files go into root_dir.
-        # Tracked paths are rewritten to the new locations and re-running is a
-        # no-op for anything already coalesced.
+        """Organize files on disk into root_dir.
+
+        Each not-yet-coalesced dataset's files go to root_dir/<dataset_name>/;
+        collection-level OTHER files go to root_dir/other_files/ and other shared
+        files go into root_dir. Tracked paths are rewritten to the new
+        locations and re-running is a no-op for anything already coalesced.
+        """
         for name, dataset in self._datasets.items():
             if name in self._coalesced_datasets:
                 continue
@@ -250,9 +258,11 @@ class Collection:
                 self._coalesced_files.add(dest)
 
     def dumps(self) -> str:
-        # Creates a string with json that lists file paths and their tags,
-        # including dataset subdirectories. Everything must be coalesced first,
-        # so the manifest always reflects organized, on-disk locations.
+        """Create a JSON string listing file paths and their tags.
+
+        Includes dataset subdirectories. Everything must be coalesced first, so
+        the manifest always reflects organized, on-disk locations.
+        """
         uncoalesced = [name for name in self._datasets if name not in self._coalesced_datasets]
         uncoalesced += [p for p in self._shared_tagged_files if p not in self._coalesced_files]
         if uncoalesced:
