@@ -3,9 +3,16 @@
 Primary resolution path uses local LanceDB tables (organisms, genomic_features,
 genomic_feature_aliases) for fast, offline, deterministic resolution. The mygene
 and ensembl REST utilities are retained as standalone helpers for enrichment.
+
+Two input lanes run on the shared resolver pipeline (see
+``specs/resolver-framework.md``): symbols resolve through the alias table with
+canonical disambiguation (shared with proteins), while Ensembl IDs resolve
+directly against the features table, partitioned by the organism detected from
+each ID's prefix.
 """
 
 import re
+from collections import defaultdict
 from typing import Literal
 
 import polars as pl
@@ -16,6 +23,14 @@ from auto_atlas.metadata_table import (
     GENOMIC_FEATURES_TABLE,
     ORGANISMS_TABLE,
     get_reference_db,
+)
+from auto_atlas.resolvers import (
+    AliasLookup,
+    CanonicalAliasDisambiguator,
+    Disambiguation,
+    LookupHit,
+    ResolverContext,
+    ResolverPipeline,
 )
 from auto_atlas.types import GeneResolution, ResolutionReport
 
@@ -129,198 +144,6 @@ def _batch_lookup_features(ensembl_gene_ids: list[str], scientific_name: str) ->
     return result.drop("assembly")
 
 
-# ---------------------------------------------------------------------------
-# Primary resolution: symbols via alias table
-# ---------------------------------------------------------------------------
-
-
-def _resolve_symbols(
-    symbols: list[str],
-    organism: str,
-) -> dict[str, GeneResolution]:
-    """Resolve gene symbols via the genomic_feature_aliases table."""
-    if not symbols:
-        return {}
-
-    org_record = _get_organism_record(organism)
-    scientific_name = org_record["scientific_name"]
-
-    db = get_reference_db()
-    table = db.open_table(GENOMIC_FEATURE_ALIASES_TABLE)
-
-    # Lowercase all input symbols for matching
-    lower_to_original: dict[str, str] = {}
-    for sym in symbols:
-        lower_to_original[sym.lower()] = sym
-
-    # Batch query aliases
-    alias_frames: list[pl.DataFrame] = []
-    lower_symbols = list(lower_to_original.keys())
-    for i in range(0, len(lower_symbols), 500):
-        batch = lower_symbols[i : i + 500]
-        in_clause = ", ".join(f"'{sql_escape(a)}'" for a in batch)
-        df = (
-            table.search()
-            .where(
-                f"alias IN ({in_clause}) AND organism = '{sql_escape(scientific_name)}'",
-                prefilter=True,
-            )
-            .select(["alias", "alias_original", "ensembl_gene_id", "is_canonical"])
-            .to_polars()
-        )
-        alias_frames.append(df)
-
-    if not alias_frames:
-        return {}
-
-    aliases_df = pl.concat(alias_frames)
-    if aliases_df.is_empty():
-        return {}
-
-    # Group by alias to handle disambiguation
-    results: dict[str, GeneResolution] = {}
-    grouped = aliases_df.group_by("alias").agg(pl.all())
-
-    for row in grouped.iter_rows(named=True):
-        alias_lower = row["alias"]
-        original_sym = lower_to_original.get(alias_lower)
-        if original_sym is None:
-            continue
-
-        ensembl_ids = row["ensembl_gene_id"]
-        is_canonical_flags = row["is_canonical"]
-
-        # Deduplicate by ensembl_gene_id
-        seen: dict[str, bool] = {}
-        for eid, is_can in zip(ensembl_ids, is_canonical_flags, strict=True):
-            if eid not in seen:
-                seen[eid] = is_can
-            else:
-                # Keep the canonical flag if any alias is canonical
-                seen[eid] = seen[eid] or is_can
-
-        unique_ids = list(seen.keys())
-        canonical_ids = [eid for eid, is_can in seen.items() if is_can]
-
-        if len(canonical_ids) == 1:
-            best_id = canonical_ids[0]
-            confidence = 1.0
-        elif len(unique_ids) == 1:
-            best_id = unique_ids[0]
-            confidence = 0.9
-        else:
-            # Multiple matches — pick first by sorted ensembl_gene_id
-            if canonical_ids:
-                sorted_ids = sorted(canonical_ids)
-            else:
-                sorted_ids = sorted(unique_ids)
-            best_id = sorted_ids[0]
-            confidence = 0.7
-
-        alternatives = sorted(eid for eid in unique_ids if eid != best_id)
-
-        results[original_sym] = GeneResolution(
-            input_value=original_sym,
-            resolved_value=best_id,
-            confidence=confidence,
-            source="lancedb",
-            ensembl_gene_id=best_id,
-            organism=organism,
-            alternatives=alternatives,
-        )
-
-    # Batch look up feature records for symbol and ncbi_gene_id
-    resolved_ids = [r.ensembl_gene_id for r in results.values() if r.ensembl_gene_id]
-    if resolved_ids:
-        features_df = _batch_lookup_features(resolved_ids, scientific_name)
-        feature_map = {row["ensembl_gene_id"]: row for row in features_df.iter_rows(named=True)}
-        for res in results.values():
-            feat = feature_map.get(res.ensembl_gene_id)
-            if feat:
-                res.symbol = feat["symbol"]
-                res.ncbi_gene_id = feat["ncbi_gene_id"]
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Primary resolution: Ensembl IDs via features table
-# ---------------------------------------------------------------------------
-
-
-def _resolve_ensembl_ids(
-    ensembl_ids: list[str],
-    organism: str,
-) -> dict[str, GeneResolution]:
-    """Resolve Ensembl gene IDs via the genomic_features table."""
-    if not ensembl_ids:
-        return {}
-
-    org_record = _get_organism_record(organism)
-    scientific_name = org_record["scientific_name"]
-
-    db = get_reference_db()
-    table = db.open_table(GENOMIC_FEATURES_TABLE)
-
-    # Strip version suffixes
-    id_to_base: dict[str, str] = {}
-    for eid in ensembl_ids:
-        id_to_base[eid] = eid.split(".")[0]
-
-    base_ids = list(set(id_to_base.values()))
-
-    # Batch query features
-    feature_frames: list[pl.DataFrame] = []
-    for i in range(0, len(base_ids), 500):
-        batch = base_ids[i : i + 500]
-        in_clause = ", ".join(f"'{sql_escape(eid)}'" for eid in batch)
-        df = (
-            table.search()
-            .where(
-                f"ensembl_gene_id IN ({in_clause}) AND organism = '{sql_escape(scientific_name)}'",
-                prefilter=True,
-            )
-            .select(["ensembl_gene_id", "symbol", "ncbi_gene_id", "assembly"])
-            .to_polars()
-        )
-        feature_frames.append(df)
-
-    feature_map: dict[str, dict] = {}
-    if feature_frames:
-        features_df = pl.concat(feature_frames)
-        # Prefer current assembly over older assemblies
-        if features_df.height > features_df.get_column("ensembl_gene_id").n_unique():
-            features_df = features_df.sort("assembly", descending=True, nulls_last=True).unique(
-                subset=["ensembl_gene_id"], keep="first"
-            )
-        features_df = features_df.drop("assembly")
-        for row in features_df.iter_rows(named=True):
-            feature_map[row["ensembl_gene_id"]] = row
-
-    results: dict[str, GeneResolution] = {}
-    for eid in ensembl_ids:
-        base = id_to_base[eid]
-        feat = feature_map.get(base)
-        if feat:
-            results[eid] = GeneResolution(
-                input_value=eid,
-                resolved_value=base,
-                confidence=1.0,
-                source="lancedb",
-                symbol=feat["symbol"],
-                ensembl_gene_id=base,
-                organism=organism,
-                ncbi_gene_id=feat["ncbi_gene_id"],
-            )
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Organism detection from Ensembl ID prefixes
-# ---------------------------------------------------------------------------
-
-
 def detect_organism_from_ensembl_ids(ids: list[str]) -> dict[str, str]:
     """Infer organism for each Ensembl ID from its prefix.
 
@@ -354,6 +177,149 @@ def detect_organism_from_ensembl_ids(ids: list[str]) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline stages: symbol lane (alias table + canonical disambiguation)
+# ---------------------------------------------------------------------------
+
+
+def _lowercase(value: str, ctx: ResolverContext) -> str:
+    """Preprocess: gene symbols are matched case-insensitively."""
+    return value.lower()
+
+
+class GeneSymbolResultBuilder:
+    """Build a ``GeneResolution`` from the disambiguated Ensembl gene id."""
+
+    def build(
+        self, key: str, original: str, picked: Disambiguation | None, ctx: ResolverContext
+    ) -> GeneResolution:
+        if picked is None or picked.chosen is None:
+            return GeneResolution(
+                input_value=original,
+                resolved_value=None,
+                confidence=0.0,
+                source="none",
+                organism=ctx.organism,
+            )
+        ensembl_gene_id = picked.chosen["id"]
+        return GeneResolution(
+            input_value=original,
+            resolved_value=ensembl_gene_id,
+            confidence=picked.confidence,
+            source=picked.source,
+            ensembl_gene_id=ensembl_gene_id,
+            organism=ctx.organism,
+            alternatives=list(picked.alternatives),
+        )
+
+
+class GeneFeatureEnricher:
+    """Fill symbol/ncbi_gene_id for resolved symbols via one batched feature lookup."""
+
+    def enrich(
+        self, results: dict[str, GeneResolution], ctx: ResolverContext
+    ) -> dict[str, GeneResolution]:
+        scientific_name = ctx.extras["scientific_name"]
+        ensembl_ids = [r.ensembl_gene_id for r in results.values() if r.ensembl_gene_id]
+        if ensembl_ids:
+            features_df = _batch_lookup_features(ensembl_ids, scientific_name)
+            feature_map = {row["ensembl_gene_id"]: row for row in features_df.iter_rows(named=True)}
+            for res in results.values():
+                feat = feature_map.get(res.ensembl_gene_id)
+                if feat:
+                    res.symbol = feat["symbol"]
+                    res.ncbi_gene_id = feat["ncbi_gene_id"]
+        return results
+
+
+# ---------------------------------------------------------------------------
+# Pipeline stages: Ensembl-ID lane (features table, organism per-ID prefix)
+# ---------------------------------------------------------------------------
+
+
+class GeneEnsemblLookup:
+    """Resolve Ensembl IDs against the features table.
+
+    Each ID's organism is detected from its prefix, so IDs are grouped by
+    organism and each group is queried with its own organism clause (the
+    per-key partition described in the spec). Version suffixes are stripped for
+    the query; the looked-up feature row is the single candidate per ID.
+    """
+
+    def lookup(self, keys: list[str], ctx: ResolverContext) -> dict[str, LookupHit | None]:
+        if not keys:
+            return {}
+
+        id_to_base = {key: key.split(".")[0] for key in keys}
+        detected = detect_organism_from_ensembl_ids(keys)
+
+        groups: dict[str, list[str]] = defaultdict(list)
+        for key in keys:
+            organism = detected.get(key, ctx.organism) or ctx.organism
+            if organism == "unknown":
+                organism = ctx.organism  # fall back to caller-specified organism
+            groups[organism].append(key)
+
+        hits: dict[str, LookupHit | None] = {}
+        for organism, group_keys in groups.items():
+            scientific_name = _get_organism_record(organism)["scientific_name"]
+            base_ids = list({id_to_base[key] for key in group_keys})
+            features_df = _batch_lookup_features(base_ids, scientific_name)
+            base_map = {row["ensembl_gene_id"]: row for row in features_df.iter_rows(named=True)}
+            for key in group_keys:
+                row = base_map.get(id_to_base[key])
+                hits[key] = (
+                    LookupHit(key=key, candidates=[row], source="lancedb")
+                    if row is not None
+                    else None
+                )
+        return hits
+
+
+class GeneEnsemblResultBuilder:
+    """Build a ``GeneResolution`` directly from a matched feature row."""
+
+    def build(
+        self, key: str, original: str, picked: Disambiguation | None, ctx: ResolverContext
+    ) -> GeneResolution:
+        if picked is None or picked.chosen is None:
+            return GeneResolution(
+                input_value=original,
+                resolved_value=None,
+                confidence=0.0,
+                source="none",
+                organism=ctx.organism,
+            )
+        row = picked.chosen
+        base = row["ensembl_gene_id"]
+        return GeneResolution(
+            input_value=original,
+            resolved_value=base,
+            confidence=1.0,
+            source="lancedb",
+            symbol=row["symbol"],
+            ensembl_gene_id=base,
+            organism=ctx.organism,
+            ncbi_gene_id=row["ncbi_gene_id"],
+        )
+
+
+gene_symbol_pipeline: ResolverPipeline[GeneResolution] = ResolverPipeline(
+    tool="resolve_genes",
+    result_builder=GeneSymbolResultBuilder(),
+    preprocessor=_lowercase,
+    local_lookup=AliasLookup(GENOMIC_FEATURE_ALIASES_TABLE, "ensembl_gene_id"),
+    disambiguator=CanonicalAliasDisambiguator(),
+    enricher=GeneFeatureEnricher(),
+)
+
+gene_ensembl_pipeline: ResolverPipeline[GeneResolution] = ResolverPipeline(
+    tool="resolve_genes",
+    result_builder=GeneEnsemblResultBuilder(),
+    local_lookup=GeneEnsemblLookup(),
+)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -380,55 +346,35 @@ def resolve_genes(
     ResolutionReport
         One ``GeneResolution`` per input value.
     """
-    results: dict[str, GeneResolution] = {}
-
-    # Classify inputs
+    # Route each input to the symbol or Ensembl-ID lane, tracking positions so
+    # the two sub-reports can be merged back into the caller's order.
     if input_type == "auto":
-        symbols = [v for v in values if not _is_ensembl_id(v)]
-        ensembl_ids = [v for v in values if _is_ensembl_id(v)]
+        symbol_idx = [i for i, v in enumerate(values) if not _is_ensembl_id(v)]
+        ensembl_idx = [i for i, v in enumerate(values) if _is_ensembl_id(v)]
     elif input_type == "symbol":
-        symbols = list(values)
-        ensembl_ids = []
+        symbol_idx = list(range(len(values)))
+        ensembl_idx = []
     else:
-        symbols = []
-        ensembl_ids = list(values)
+        symbol_idx = []
+        ensembl_idx = list(range(len(values)))
 
-    # Resolve symbols via alias table
-    if symbols:
-        symbol_results = _resolve_symbols(symbols, organism)
-        results.update(symbol_results)
+    results: list[GeneResolution] = [None] * len(values)  # type: ignore[list-item]
 
-    # Resolve Ensembl IDs — detect organism per-ID from prefix
-    if ensembl_ids:
-        id_organisms = detect_organism_from_ensembl_ids(ensembl_ids)
-        ids_by_organism: dict[str, list[str]] = {}
-        for eid in ensembl_ids:
-            org = id_organisms.get(eid, organism)
-            if org == "unknown":
-                org = organism  # fall back to caller-specified organism
-            ids_by_organism.setdefault(org, []).append(eid)
-        for org, org_ids in ids_by_organism.items():
-            ensembl_results = _resolve_ensembl_ids(org_ids, org)
-            results.update(ensembl_results)
+    if symbol_idx:
+        extras = {"scientific_name": _get_organism_record(organism)["scientific_name"]}
+        report = gene_symbol_pipeline.resolve(
+            [values[i] for i in symbol_idx], organism=organism, extras=extras
+        )
+        for i, res in zip(symbol_idx, report.results, strict=True):
+            results[i] = res
 
-    # Build final results list aligned with input
-    final_results: list[GeneResolution] = []
-    for v in values:
-        if v in results:
-            final_results.append(results[v])
-        else:
-            final_results.append(
-                GeneResolution(
-                    input_value=v,
-                    resolved_value=None,
-                    confidence=0.0,
-                    source="none",
-                    organism=organism,
-                )
-            )
+    if ensembl_idx:
+        report = gene_ensembl_pipeline.resolve([values[i] for i in ensembl_idx], organism=organism)
+        for i, res in zip(ensembl_idx, report.results, strict=True):
+            results[i] = res
 
-    resolved_count = sum(1 for r in final_results if r.resolved_value is not None)
-    ambiguous_count = sum(1 for r in final_results if len(r.alternatives) > 0)
+    resolved_count = sum(1 for r in results if r.resolved_value is not None)
+    ambiguous_count = sum(1 for r in results if len(r.alternatives) > 0)
 
     return ResolutionReport(
         tool="resolve_genes",
@@ -436,5 +382,5 @@ def resolve_genes(
         resolved=resolved_count,
         unresolved=len(values) - resolved_count,
         ambiguous=ambiguous_count,
-        results=final_results,
+        results=results,
     )

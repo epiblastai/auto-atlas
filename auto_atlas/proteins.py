@@ -1,7 +1,8 @@
 """Protein name/ID resolution against local LanceDB reference tables.
 
 Resolves protein names, gene names, and UniProt accessions to canonical
-UniProt IDs using the proteins and protein_aliases tables.
+UniProt IDs using the proteins and protein_aliases tables. Runs on the shared
+resolver pipeline (see ``specs/resolver-framework.md``).
 """
 
 import polars as pl
@@ -12,6 +13,13 @@ from auto_atlas.metadata_table import (
     PROTEIN_ALIASES_TABLE,
     PROTEINS_TABLE,
     get_reference_db,
+)
+from auto_atlas.resolvers import (
+    AliasLookup,
+    CanonicalAliasDisambiguator,
+    Disambiguation,
+    ResolverContext,
+    ResolverPipeline,
 )
 from auto_atlas.types import ProteinResolution, ResolutionReport
 
@@ -48,6 +56,76 @@ def _batch_lookup_proteins(uniprot_ids: list[str]) -> dict[str, dict]:
     return {row["uniprot_id"]: row for row in result.iter_rows(named=True)}
 
 
+# ---------------------------------------------------------------------------
+# Pipeline stages (see specs/resolver-framework.md)
+# ---------------------------------------------------------------------------
+
+
+def _lowercase(value: str, ctx: ResolverContext) -> str:
+    """Preprocess: protein aliases are matched case-insensitively."""
+    return value.lower()
+
+
+class ProteinResultBuilder:
+    """Build a ``ProteinResolution`` from the disambiguated UniProt id."""
+
+    def build(
+        self, key: str, original: str, picked: Disambiguation | None, ctx: ResolverContext
+    ) -> ProteinResolution:
+        if picked is None or picked.chosen is None:
+            return ProteinResolution(
+                input_value=original,
+                resolved_value=None,
+                confidence=0.0,
+                source="none",
+                organism=ctx.organism,
+            )
+        uniprot_id = picked.chosen["id"]
+        return ProteinResolution(
+            input_value=original,
+            resolved_value=uniprot_id,
+            confidence=picked.confidence,
+            source=picked.source,
+            uniprot_id=uniprot_id,
+            organism=ctx.organism,
+            alternatives=list(picked.alternatives),
+        )
+
+
+class ProteinEnricher:
+    """Enrich resolved proteins with name/gene/sequence via one batched lookup."""
+
+    def enrich(
+        self, results: dict[str, ProteinResolution], ctx: ResolverContext
+    ) -> dict[str, ProteinResolution]:
+        uniprot_ids = list({r.uniprot_id for r in results.values() if r.uniprot_id})
+        if uniprot_ids:
+            protein_map = _batch_lookup_proteins(uniprot_ids)
+            for res in results.values():
+                prot = protein_map.get(res.uniprot_id)
+                if prot:
+                    res.protein_name = prot["protein_name"]
+                    res.gene_name = prot["gene_name"]
+                    res.sequence = prot["sequence"]
+                    res.sequence_length = prot["sequence_length"]
+        return results
+
+
+protein_pipeline: ResolverPipeline[ProteinResolution] = ResolverPipeline(
+    tool="resolve_proteins",
+    result_builder=ProteinResultBuilder(),
+    preprocessor=_lowercase,
+    local_lookup=AliasLookup(PROTEIN_ALIASES_TABLE, "uniprot_id"),
+    disambiguator=CanonicalAliasDisambiguator(),
+    enricher=ProteinEnricher(),
+)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
 def resolve_proteins(
     values: list[str],
     organism: str = "human",
@@ -66,134 +144,7 @@ def resolve_proteins(
     ResolutionReport
         One ``ProteinResolution`` per input value.
     """
-    if not values:
-        return ResolutionReport(
-            tool="resolve_proteins",
-            total=0,
-            resolved=0,
-            unresolved=0,
-            ambiguous=0,
-            results=[],
-        )
-
-    org_record = _get_organism_record(organism)
-    scientific_name = org_record["scientific_name"]
-
-    db = get_reference_db()
-    alias_table = db.open_table(PROTEIN_ALIASES_TABLE)
-
-    # Lowercase all input values for matching
-    lower_to_original: dict[str, str] = {}
-    for v in values:
-        lower_to_original[v.lower()] = v
-
-    # Batch query aliases
-    alias_frames: list[pl.DataFrame] = []
-    lower_values = list(lower_to_original.keys())
-    for i in range(0, len(lower_values), 500):
-        batch = lower_values[i : i + 500]
-        in_clause = ", ".join(f"'{sql_escape(a)}'" for a in batch)
-        df = (
-            alias_table.search()
-            .where(
-                f"alias IN ({in_clause}) AND organism = '{sql_escape(scientific_name)}'",
-                prefilter=True,
-            )
-            .select(["alias", "alias_original", "uniprot_id", "is_canonical"])
-            .to_polars()
-        )
-        alias_frames.append(df)
-
-    # Build resolution results from alias matches
-    results: dict[str, ProteinResolution] = {}
-
-    if alias_frames:
-        aliases_df = pl.concat(alias_frames)
-        if not aliases_df.is_empty():
-            grouped = aliases_df.group_by("alias").agg(pl.all())
-
-            for row in grouped.iter_rows(named=True):
-                alias_lower = row["alias"]
-                original_val = lower_to_original.get(alias_lower)
-                if original_val is None:
-                    continue
-
-                uniprot_ids = row["uniprot_id"]
-                is_canonical_flags = row["is_canonical"]
-
-                # Deduplicate by uniprot_id
-                seen: dict[str, bool] = {}
-                for uid, is_can in zip(uniprot_ids, is_canonical_flags, strict=True):
-                    if uid not in seen:
-                        seen[uid] = is_can
-                    else:
-                        seen[uid] = seen[uid] or is_can
-
-                unique_ids = list(seen.keys())
-                canonical_ids = [uid for uid, is_can in seen.items() if is_can]
-
-                if len(canonical_ids) == 1:
-                    best_id = canonical_ids[0]
-                    confidence = 1.0
-                elif len(unique_ids) == 1:
-                    best_id = unique_ids[0]
-                    confidence = 0.9
-                else:
-                    if canonical_ids:
-                        sorted_ids = sorted(canonical_ids)
-                    else:
-                        sorted_ids = sorted(unique_ids)
-                    best_id = sorted_ids[0]
-                    confidence = 0.7
-
-                alternatives = sorted(uid for uid in unique_ids if uid != best_id)
-
-                results[original_val] = ProteinResolution(
-                    input_value=original_val,
-                    resolved_value=best_id,
-                    confidence=confidence,
-                    source="lancedb",
-                    uniprot_id=best_id,
-                    organism=organism,
-                    alternatives=alternatives,
-                )
-
-    # Batch lookup protein records to enrich with protein_name and gene_name
-    resolved_ids = [r.uniprot_id for r in results.values() if r.uniprot_id]
-    if resolved_ids:
-        protein_map = _batch_lookup_proteins(list(set(resolved_ids)))
-        for res in results.values():
-            prot = protein_map.get(res.uniprot_id)
-            if prot:
-                res.protein_name = prot["protein_name"]
-                res.gene_name = prot["gene_name"]
-                res.sequence = prot["sequence"]
-                res.sequence_length = prot["sequence_length"]
-
-    # Build final results list aligned with input order
-    final_results: list[ProteinResolution] = []
-    for v in values:
-        if v in results:
-            final_results.append(results[v])
-        else:
-            final_results.append(
-                ProteinResolution(
-                    input_value=v,
-                    resolved_value=None,
-                    confidence=0.0,
-                    source="none",
-                    organism=organism,
-                )
-            )
-
-    resolved_count = sum(1 for r in final_results if r.resolved_value is not None)
-    ambiguous_count = sum(1 for r in final_results if len(r.alternatives) > 0)
-
-    return ResolutionReport(
-        tool="resolve_proteins",
-        total=len(values),
-        resolved=resolved_count,
-        unresolved=len(values) - resolved_count,
-        ambiguous=ambiguous_count,
-        results=final_results,
-    )
+    extras: dict[str, object] = {}
+    if values:
+        extras["scientific_name"] = _get_organism_record(organism)["scientific_name"]
+    return protein_pipeline.resolve(values, organism=organism, extras=extras)

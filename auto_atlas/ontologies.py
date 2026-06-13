@@ -4,12 +4,13 @@ Covers: cell_type (CL), tissue (UBERON), disease (MONDO), organism (NCBITaxon),
 assay (EFO), development_stage (HsapDv/MmusDv), ethnicity (HANCESTRO),
 sex (PATO), cell_line (Cellosaurus).
 
-Strategy:
-1. Exact name match (case-insensitive) against ontology_terms table → confidence 1.0
-2. Synonym match (pipe-delimited, case-insensitive) → confidence 0.9
-3. No match → unresolved (confidence 0.0)
+Resolution runs on the shared resolver pipeline (see
+``specs/resolver-framework.md``) via three lanes dispatched by entity:
 
-Cell lines use a local Cellosaurus table (cell_lines + cell_line_synonyms).
+1. Standard ontology terms — in-memory name/synonym indices (exact name → 1.0,
+   synonym → 0.9, else unresolved).
+2. sex — hardcoded PATO terms.
+3. cell_line — Cellosaurus name/synonym indices with an FTS fuzzy fallback (0.7).
 """
 
 import functools
@@ -24,6 +25,12 @@ from auto_atlas.metadata_table import (
     CELL_LINES_TABLE,
     ONTOLOGY_TERMS_TABLE,
     get_reference_db,
+)
+from auto_atlas.resolvers import (
+    Disambiguation,
+    LookupHit,
+    ResolverContext,
+    ResolverPipeline,
 )
 from auto_atlas.types import CellLineResolution, OntologyResolution, ResolutionReport
 
@@ -142,33 +149,6 @@ def _build_synonym_index(prefix: str) -> dict[str, tuple[str, str, str]]:
     return index
 
 
-# ---------------------------------------------------------------------------
-# Resolution
-# ---------------------------------------------------------------------------
-
-
-def _resolve_sex(value: str) -> OntologyResolution:
-    """Resolve sex terms to PATO ontology IDs."""
-    v = value.strip().lower()
-    if v in _SEX_TERMS:
-        term_id, label = _SEX_TERMS[v]
-        return OntologyResolution(
-            input_value=value,
-            resolved_value=label,
-            confidence=1.0,
-            source="pato_hardcoded",
-            ontology_term_id=term_id,
-            ontology_name="PATO",
-        )
-    return OntologyResolution(
-        input_value=value,
-        resolved_value=None,
-        confidence=0.0,
-        source="none",
-        ontology_name="PATO",
-    )
-
-
 @functools.lru_cache(maxsize=1)
 def _load_cell_lines() -> pl.DataFrame:
     """Load all cell lines from the reference DB. Cached."""
@@ -252,136 +232,199 @@ def _make_cell_line_resolution(
     )
 
 
-def _resolve_cell_lines(values: list[str]) -> list[CellLineResolution]:
-    """Resolve cell line names against the local Cellosaurus reference DB.
+# ---------------------------------------------------------------------------
+# Pipeline stages
+# ---------------------------------------------------------------------------
 
-    Resolution cascade:
-    1. Exact name match (confidence 1.0)
-    2. Synonym match (confidence 0.9)
-    3. FTS fuzzy search (confidence 0.7)
-    4. Unresolved (confidence 0.0)
-    """
-    name_index = _build_cell_line_name_index()
-    synonym_index = _build_cell_line_synonym_index()
-    record_lookup = _build_cell_line_record_lookup()
 
-    results: list[CellLineResolution] = []
-    for val in values:
-        key = val.strip().lower()
+def _strip_lower(value: str, ctx: ResolverContext) -> str:
+    """Preprocess: ontology values are matched case-insensitively, trimmed."""
+    return value.strip().lower()
 
-        if not key:
-            results.append(
-                CellLineResolution(
-                    input_value=val,
-                    resolved_value=None,
-                    confidence=0.0,
-                    source="none",
+
+class OntologyTermLookup:
+    """In-memory name/synonym index lookup for a fixed entity (from ``ctx.extras``)."""
+
+    def lookup(self, keys: list[str], ctx: ResolverContext) -> dict[str, LookupHit | None]:
+        entity = ctx.extras["entity"]
+        prefixes = _get_prefixes(entity, ctx.organism)
+
+        name_index: dict[str, tuple[str, str]] = {}
+        synonym_index: dict[str, tuple[str, str, str]] = {}
+        for prefix in prefixes:
+            name_index.update(_build_name_index(prefix))
+            synonym_index.update(_build_synonym_index(prefix))
+
+        hits: dict[str, LookupHit | None] = {}
+        for key in keys:
+            if key in name_index:
+                term_id, canonical = name_index[key]
+                candidate = {
+                    "term_id": term_id,
+                    "name": canonical,
+                    "confidence": 1.0,
+                    "source": "reference_db",
+                }
+                hits[key] = LookupHit(key=key, candidates=[candidate], source="reference_db")
+            elif key in synonym_index:
+                term_id, canonical, _syn_original = synonym_index[key]
+                candidate = {
+                    "term_id": term_id,
+                    "name": canonical,
+                    "confidence": 0.9,
+                    "source": "reference_db_synonym",
+                }
+                hits[key] = LookupHit(
+                    key=key, candidates=[candidate], source="reference_db_synonym"
                 )
-            )
-            continue
-
-        # Step 1: exact name match
-        if key in name_index:
-            results.append(
-                _make_cell_line_resolution(val, name_index[key], 1.0, "reference_db", record_lookup)
-            )
-            continue
-
-        # Step 2: synonym match
-        if key in synonym_index:
-            results.append(
-                _make_cell_line_resolution(
-                    val, synonym_index[key], 0.9, "reference_db_synonym", record_lookup
-                )
-            )
-            continue
-
-        # Step 3: FTS fuzzy search
-        db = get_reference_db()
-        fts_table = db.open_table(CELL_LINE_SYNONYMS_TABLE)
-        fts_results = fts_table.search(val.strip(), query_type="fts").limit(5).to_polars()
-        if not fts_results.is_empty():
-            top_id = fts_results.row(0, named=True)["cellosaurus_id"]
-            results.append(
-                _make_cell_line_resolution(val, top_id, 0.7, "reference_db_fts", record_lookup)
-            )
-            continue
-
-        # Step 4: unresolved
-        results.append(
-            CellLineResolution(
-                input_value=val,
-                resolved_value=None,
-                confidence=0.0,
-                source="none",
-            )
-        )
-
-    return results
+            else:
+                hits[key] = None
+        return hits
 
 
-def _resolve_against_db(
-    values: list[str],
-    entity: OntologyEntity,
-    organism: str | None = None,
-) -> list[OntologyResolution]:
-    """Resolve values against the local ontology_terms table."""
-    ontology_name = ENTITY_TO_ONTOLOGY_NAME.get(entity, entity.value)
-    prefixes = _get_prefixes(entity, organism)
+class SexLookup:
+    """Hardcoded PATO sex terms."""
 
-    # Build combined name and synonym indices across all relevant prefixes
-    name_index: dict[str, tuple[str, str]] = {}
-    synonym_index: dict[str, tuple[str, str, str]] = {}
-    for prefix in prefixes:
-        name_index.update(_build_name_index(prefix))
-        synonym_index.update(_build_synonym_index(prefix))
+    def lookup(self, keys: list[str], ctx: ResolverContext) -> dict[str, LookupHit | None]:
+        hits: dict[str, LookupHit | None] = {}
+        for key in keys:
+            if key in _SEX_TERMS:
+                term_id, label = _SEX_TERMS[key]
+                candidate = {
+                    "term_id": term_id,
+                    "name": label,
+                    "confidence": 1.0,
+                    "source": "pato_hardcoded",
+                }
+                hits[key] = LookupHit(key=key, candidates=[candidate], source="pato_hardcoded")
+            else:
+                hits[key] = None
+        return hits
 
-    results: list[OntologyResolution] = []
-    for val in values:
-        key = val.strip().lower()
 
-        # Step 1: exact name match
-        if key in name_index:
-            term_id, canonical_name = name_index[key]
-            results.append(
-                OntologyResolution(
-                    input_value=val,
-                    resolved_value=canonical_name,
-                    confidence=1.0,
-                    source="reference_db",
-                    ontology_term_id=term_id,
-                    ontology_name=ontology_name,
-                )
-            )
-            continue
+class OntologyResultBuilder:
+    """Build an ``OntologyResolution`` (covers standard terms and sex)."""
 
-        # Step 2: synonym match
-        if key in synonym_index:
-            term_id, canonical_name, _syn_original = synonym_index[key]
-            results.append(
-                OntologyResolution(
-                    input_value=val,
-                    resolved_value=canonical_name,
-                    confidence=0.9,
-                    source="reference_db_synonym",
-                    ontology_term_id=term_id,
-                    ontology_name=ontology_name,
-                )
-            )
-            continue
-
-        # Step 3: unresolved
-        results.append(
-            OntologyResolution(
-                input_value=val,
+    def build(
+        self, key: str, original: str, picked: Disambiguation | None, ctx: ResolverContext
+    ) -> OntologyResolution:
+        entity = ctx.extras["entity"]
+        ontology_name = ENTITY_TO_ONTOLOGY_NAME.get(entity, entity.value)
+        if picked is None or picked.chosen is None:
+            return OntologyResolution(
+                input_value=original,
                 resolved_value=None,
                 confidence=0.0,
                 source="none",
                 ontology_name=ontology_name,
             )
+        chosen = picked.chosen
+        return OntologyResolution(
+            input_value=original,
+            resolved_value=chosen["name"],
+            confidence=chosen["confidence"],
+            source=chosen["source"],
+            ontology_term_id=chosen["term_id"],
+            ontology_name=ontology_name,
         )
 
-    return results
+
+class CellLineLookup:
+    """Cellosaurus name (1.0) then synonym (0.9) index lookup."""
+
+    def lookup(self, keys: list[str], ctx: ResolverContext) -> dict[str, LookupHit | None]:
+        name_index = _build_cell_line_name_index()
+        synonym_index = _build_cell_line_synonym_index()
+
+        hits: dict[str, LookupHit | None] = {}
+        for key in keys:
+            if not key:
+                hits[key] = None  # empty input: no lookup, no FTS (see fallback guard)
+            elif key in name_index:
+                candidate = {
+                    "cellosaurus_id": name_index[key],
+                    "confidence": 1.0,
+                    "source": "reference_db",
+                }
+                hits[key] = LookupHit(key=key, candidates=[candidate], source="reference_db")
+            elif key in synonym_index:
+                candidate = {
+                    "cellosaurus_id": synonym_index[key],
+                    "confidence": 0.9,
+                    "source": "reference_db_synonym",
+                }
+                hits[key] = LookupHit(
+                    key=key, candidates=[candidate], source="reference_db_synonym"
+                )
+            else:
+                hits[key] = None
+        return hits
+
+
+class CellLineFTSFallback:
+    """Fallback: full-text fuzzy search over the synonym table (confidence 0.7)."""
+
+    def try_resolve(
+        self, key: str, original: str, ctx: ResolverContext
+    ) -> CellLineResolution | None:
+        if not original.strip():
+            return None  # empty input stays unresolved
+        record_lookup = _build_cell_line_record_lookup()
+        db = get_reference_db()
+        fts_table = db.open_table(CELL_LINE_SYNONYMS_TABLE)
+        fts_results = fts_table.search(original.strip(), query_type="fts").limit(5).to_polars()
+        if fts_results.is_empty():
+            return None
+        top_id = fts_results.row(0, named=True)["cellosaurus_id"]
+        return _make_cell_line_resolution(original, top_id, 0.7, "reference_db_fts", record_lookup)
+
+
+class CellLineResultBuilder:
+    """Build a ``CellLineResolution`` from a matched cellosaurus_id, or a stub."""
+
+    def build(
+        self, key: str, original: str, picked: Disambiguation | None, ctx: ResolverContext
+    ) -> CellLineResolution:
+        if picked is None or picked.chosen is None:
+            return CellLineResolution(
+                input_value=original, resolved_value=None, confidence=0.0, source="none"
+            )
+        chosen = picked.chosen
+        return _make_cell_line_resolution(
+            original,
+            chosen["cellosaurus_id"],
+            chosen["confidence"],
+            chosen["source"],
+            _build_cell_line_record_lookup(),
+        )
+
+
+ontology_term_pipeline: ResolverPipeline[OntologyResolution] = ResolverPipeline(
+    tool="resolve_ontology_terms",
+    result_builder=OntologyResultBuilder(),
+    preprocessor=_strip_lower,
+    local_lookup=OntologyTermLookup(),
+)
+
+sex_pipeline: ResolverPipeline[OntologyResolution] = ResolverPipeline(
+    tool="resolve_ontology_terms",
+    result_builder=OntologyResultBuilder(),
+    preprocessor=_strip_lower,
+    local_lookup=SexLookup(),
+)
+
+cell_line_pipeline: ResolverPipeline[CellLineResolution] = ResolverPipeline(
+    tool="resolve_cell_lines",
+    result_builder=CellLineResultBuilder(),
+    preprocessor=_strip_lower,
+    local_lookup=CellLineLookup(),
+    fallbacks=[CellLineFTSFallback()],
+)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def resolve_ontology_terms(
@@ -412,23 +455,12 @@ def resolve_ontology_terms(
         One ``OntologyResolution`` per input value.
     """
     if entity == OntologyEntity.SEX:
-        results = [_resolve_sex(v) for v in values]
+        pipeline: ResolverPipeline = sex_pipeline
     elif entity == OntologyEntity.CELL_LINE:
-        results = _resolve_cell_lines(values)
+        pipeline = cell_line_pipeline
     else:
-        results = _resolve_against_db(values, entity, organism)
-
-    resolved_count = sum(1 for r in results if r.resolved_value is not None)
-    ambiguous_count = sum(1 for r in results if len(r.alternatives) > 1)
-
-    return ResolutionReport(
-        tool=tool,
-        total=len(values),
-        resolved=resolved_count,
-        unresolved=len(values) - resolved_count,
-        ambiguous=ambiguous_count,
-        results=results,
-    )
+        pipeline = ontology_term_pipeline
+    return pipeline.resolve(values, tool=tool, organism=organism, extras={"entity": entity})
 
 
 def get_ontology_term_id(
